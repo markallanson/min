@@ -149,7 +149,7 @@ impl AgentPlugin {
             .chars()
             .take(100)
             .collect();
-        hub.emit(events::ToolEnd { ok, secs, note });
+        hub.emit(events::ToolEnd { ok, secs, note, preview: preview(&payload) });
         json!({
             "type": "tool_result",
             "tool_use_id": id,
@@ -194,6 +194,28 @@ Working style:
     s
 }
 
+/// First lines of a tool result, for the terminal preview after `✓`.
+/// Skips blank lines so the first lines are never blank, caps at 5 lines /
+/// 120 columns each (a wrapped line floods the transcript, not helps), and
+/// cuts on a character boundary — a byte-cut would tear a multi-byte char.
+fn preview(payload: &str) -> String {
+    const LINES: usize = 5;
+    const COLS: usize = 120;
+    let mut out: Vec<&str> = Vec::new();
+    for line in payload.lines().filter(|l| !l.trim().is_empty()) {
+        let end = line
+            .char_indices()
+            .nth(COLS)
+            .map(|(i, _)| i)
+            .unwrap_or(line.len());
+        out.push(&line[..end]);
+        if out.len() == LINES {
+            break;
+        }
+    }
+    out.join("\n")
+}
+
 /// UTC date from the epoch — avoids a datetime dependency.
 fn utc_date() -> String {
     let secs = std::time::SystemTime::now()
@@ -221,6 +243,22 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use min_core::Hub;
+
+    #[test]
+    fn preview_takes_first_five_nonblank_lines() {
+        let p = preview("a\n\nb\n\nc\nd\ne\nf\ng");
+        assert_eq!(p, "a\nb\nc\nd\ne");
+        assert_eq!(preview("\n\n  \nonly"), "only");
+        assert_eq!(preview(""), "");
+    }
+
+    #[test]
+    fn preview_caps_line_width_and_is_utf8_safe() {
+        let long = "x".repeat(300);
+        assert_eq!(preview(&long).chars().count(), 120);
+        let mb = "é".repeat(200); // 2 bytes each; a byte-cut would tear one
+        assert_eq!(preview(&mb).chars().count(), 120);
+    }
 
     #[test]
     fn prompt_sections_arrive_via_events_not_file_reads() {

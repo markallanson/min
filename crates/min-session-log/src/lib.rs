@@ -364,6 +364,7 @@ mod tests {
                 ok: true,
                 secs: 0.01,
                 note: "[package]".into(),
+                preview: "line one\nline two".into(),
             },
         );
         p.handle(

@@ -156,7 +156,7 @@ The catalogue — pure data, no behaviour:
 | `UserInput` | repl → agent | `text` |
 | `AssistantDelta` | agent → repl | streamed text chunk |
 | `MessageEnd` | agent → repl | (none) |
-| `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note |
+| `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note, first lines of the result as `preview` |
 | `Info` / `Error` | any → repl | human-facing status |
 | `SessionStart` / `SessionEnd` | session → everyone | session id + parent / id — a fresh id on boot and `/clear` |
 | `ResetConversation` | repl → everyone | (none) — context re-reads AGENTS.md, session re-rolls the id on it |

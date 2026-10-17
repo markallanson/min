@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(state_for(&events::UserInput { text: String::new() }), Some("working"));
         assert_eq!(state_for(&events::MessageEnd {}), Some("idle"));
         assert_eq!(state_for(&events::Error { text: String::new() }), Some("blocked"));
-        assert_eq!(state_for(&events::ToolEnd { ok: true, secs: 0.0, note: String::new() }), None);
+        assert_eq!(state_for(&events::ToolEnd { ok: true, secs: 0.0, note: String::new(), preview: String::new() }), None);
     }
 
     /// The mapping from `handle`, expressed purely: `Quit` is the release

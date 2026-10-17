@@ -112,7 +112,7 @@ plugins never import each other:
 | `UserInput` | repl → agent | `text` |
 | `AssistantDelta` | agent → repl | streamed text chunk |
 | `MessageEnd` | agent → repl | (none) |
-| `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note |
+| `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note, first lines of the result as `preview` |
 | `Info` / `Error` | any → repl | human-facing status |
 | `SessionStart` / `SessionEnd` | session → everyone | session id + parent / id — a fresh id on boot and `/clear` |
 | `ResetConversation` | repl → everyone | (none) — context re-reads instruction files, session re-rolls the id |

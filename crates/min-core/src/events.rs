@@ -28,7 +28,13 @@ pub struct ToolStart {
 pub struct ToolEnd {
     pub ok: bool,
     pub secs: f64,
+    /// One-line glance of the result (first output line, capped) — shown on
+    /// failure and written to the session log.
     pub note: String,
+    /// First lines of the tool's output for the UI — the repl prints them
+    /// under the ✓ so a command's progress is visible without opening the
+    /// transcript. May be empty (nothing to show).
+    pub preview: String,
 }
 
 /// Human-facing status text (any plugin → repl).

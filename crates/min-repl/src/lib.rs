@@ -138,6 +138,9 @@ impl Plugin for Repl {
                     ansi::dim(&e.note)
                 ));
             }
+            for line in e.preview.lines() {
+                self.put_line(&format!("  {}", ansi::dim(line)));
+            }
         } else if let Some(e) = event.downcast_ref::<events::Info>() {
             self.put_line(&ansi::dim(&e.text));
         } else if let Some(e) = event.downcast_ref::<events::Error>() {
