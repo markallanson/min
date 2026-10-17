@@ -66,11 +66,13 @@ for scripting: `echo 'explain this repo' | min`.
 The z.ai/bigmodel API answers **429** both for real rate limits *and* for a
 plan/endpoint mismatch, so check the message body:
 
-- `Insufficient balance or no resource package` (code **1113**) — the endpoint
-  doesn't match your key. Coding-plan keys only work on the **coding**
-  endpoints (`MIN_API=zai` → `api.z.ai/api/coding/paas/v4`, or
-  `open.bigmodel.cn/api/coding/paas/v4`), never the general
-  `api.z.ai/api/paas/v4`. min detects this and fails fast with a hint.
+- `Insufficient balance or no resource package` (code **1113**) — the key
+  doesn't have a coding-plan resource package **on that endpoint**. Plans are
+  regional: a key from one portal gets 1113 on the other
+  (`api.z.ai` ↔ `open.bigmodel.cn`). min automatically retries the mirror
+  portal for the session and says so; if both fail, the error includes a
+  fingerprint of the key so you can tell *which* key was rejected. General
+  `.../api/paas/v4` endpoints never accept coding-plan keys.
 - anything else — a real rate/concurrency limit. Coding plans limit
   **concurrent** generations per key, allowance notwithstanding (other
   clients on the same key count too). min retries with exponential backoff

@@ -12,9 +12,14 @@
 //! so the rest of min never has to care which wire format is in use.
 //!
 //! Failures are classified: `429` with a balance/resource-package error is
-//! an endpoint/plan mismatch (fail fast, with a hint), while genuine rate
-//! limits and 5xx/network errors are retried with exponential backoff
-//! (1→32s, honouring `Retry-After`), reporting progress via a status callback.
+//! an endpoint/plan mismatch, while genuine rate limits and 5xx/network
+//! errors are retried with exponential backoff (1→32s, honouring
+//! `Retry-After`), reporting progress via a status callback.
+//!
+//! The z.ai coding plan is served from two regional portals (`api.z.ai` and
+//! `open.bigmodel.cn`); a key provisioned on one gets "no resource package"
+//! (a 429) on the other. On that error min automatically retries the mirror
+//! portal for the rest of the session.
 //!
 //! Environment:
 //! - `MIN_API`            dialect or endpoint alias: `"anthropic"` (default),
@@ -30,6 +35,7 @@
 
 use min_core::{events, Hub, Plugin};
 use serde_json::{json, Value};
+use std::cell::{Cell, RefCell};
 use std::io::{BufRead, BufReader, Read};
 use std::time::Duration;
 
@@ -48,7 +54,7 @@ impl Plugin for LlmPlugin {
                 text: "warning: no API key set (ANTHROPIC_API_KEY, MIN_API_KEY/OPENAI_API_KEY, or ZAI_API_KEY for MIN_API=zai)".into(),
             });
         }
-        let host = llm.base.split("//").nth(1).unwrap_or(llm.base.as_str());
+        let host = llm.base().split("//").nth(1).unwrap_or_default().to_string();
         hub.emit(events::Info {
             text: format!("{} @ {} — /help for commands", llm.model, host),
         });
@@ -60,7 +66,11 @@ impl Plugin for LlmPlugin {
 pub struct Llm {
     http: ureq::Agent,
     api: &'static str,
-    base: String,
+    base: RefCell<String>,
+    /// The other regional portal for the z.ai coding plan, if `base` is one.
+    mirror: Option<&'static str>,
+    /// Set once the mirror has been tried (successfully or not).
+    mirrored: Cell<bool>,
     api_key: String,
     pub model: String,
     max_tokens: u64,
@@ -90,12 +100,15 @@ impl Llm {
             let b = base.trim_end_matches('/');
             if b.is_empty() { base_default.to_string() } else { b.to_string() }
         };
+        let mirror = mirror_base(&base);
         let model = std::env::var("MIN_MODEL").unwrap_or_default();
         let model = if model.is_empty() { model_default.to_string() } else { model };
         Llm {
             http: builder.build(),
             api,
-            base,
+            base: RefCell::new(base),
+            mirror,
+            mirrored: Cell::new(false),
             api_key: first_env(&key_names),
             model,
             max_tokens: std::env::var("MIN_MAX_TOKENS")
@@ -121,7 +134,6 @@ impl Llm {
             return Err("no API key set for the LLM (see MIN_API / ANTHROPIC_API_KEY / MIN_API_KEY)".into());
         }
         let body = self.build_body(system, messages, tools);
-        let host = self.base.split("//").nth(1).unwrap_or(self.base.as_str()).to_string();
         const SCHEDULE: [u64; 6] = [1, 2, 4, 8, 16, 32];
         let attempts = SCHEDULE.len();
         for attempt in 1..=attempts + 1 {
@@ -134,12 +146,26 @@ impl Llm {
                 Ok(v) => return Ok(v),
                 Err(f) => f,
             };
-            // A plan-mismatch 429 is not a rate limit — no amount of retrying helps.
+            // A plan-mismatch 429 is not a rate limit — retrying won't help,
+            // but the key may simply be provisioned on the mirror portal.
             if let Fail::Http { status: 429, body, .. } = &fail {
                 if is_plan_mismatch(body) {
+                    if !self.mirrored.get() {
+                        if let Some(alt) = self.mirror {
+                            let from = self.base();
+                            self.mirrored.set(true);
+                            *self.base.borrow_mut() = alt.to_string();
+                            on_status(&format!(
+                                "key has no resource package on {from} — switching to {alt} for this session"
+                            ));
+                            continue;
+                        }
+                    }
                     return Err(format!(
-                        "HTTP 429 from {host}: {}\nhint: {PLAN_HINT}",
-                        body.trim()
+                        "HTTP 429: {} — the key ({}) has no coding-plan resource package on {}.\nhint: {PLAN_HINT}",
+                        body.trim(),
+                        self.key_hint(),
+                        self.base()
                     ));
                 }
             }
@@ -193,10 +219,26 @@ impl Llm {
         }
     }
 
+    /// The currently active endpoint (may have switched to the mirror portal).
+    pub fn base(&self) -> String {
+        self.base.borrow().clone()
+    }
+
+    /// First/last few chars of the key, so errors show *which* key was used.
+    fn key_hint(&self) -> String {
+        let k = self.api_key.as_bytes();
+        if k.len() > 12 && self.api_key.is_ascii() {
+            format!("{}…{}", &self.api_key[..6], &self.api_key[self.api_key.len() - 4..])
+        } else {
+            "redacted".into()
+        }
+    }
+
     fn try_once(&self, body: &Value, on_delta: &mut dyn FnMut(&str)) -> Result<Value, Fail> {
+        let base = self.base();
         let url = match self.api {
-            "openai" => format!("{}/chat/completions", self.base),
-            _ => format!("{}/v1/messages", self.base),
+            "openai" => format!("{base}/chat/completions"),
+            _ => format!("{base}/v1/messages"),
         };
         let mut req = self.http.post(&url);
         req = match self.api {
@@ -346,10 +388,22 @@ fn first_env(names: &[&str]) -> String {
     String::new()
 }
 
-const PLAN_HINT: &str = "this endpoint does not see your plan's resource package — \
-     coding-plan keys only work on the coding endpoints (.../api/coding/paas/v4; \
-     MIN_API=zai or open.bigmodel.cn/api/coding/paas/v4), not the general \
-     .../api/paas/v4 endpoint. Check MIN_BASE_URL / MIN_API.";
+const PLAN_HINT: &str = "check the key (fingerprint above) and which portal its subscription \
+     belongs to — coding plans are regional (api.z.ai ↔ open.bigmodel.cn), and \
+     only work on .../api/coding/paas/v4 endpoints, not the general \
+     .../api/paas/v4. Pin the working endpoint with MIN_BASE_URL.";
+
+/// The z.ai coding plan is served from two regional portals; return the
+/// other one if `base` is either, else `None`.
+fn mirror_base(base: &str) -> Option<&'static str> {
+    if base.starts_with("https://api.z.ai/api/coding") {
+        Some("https://open.bigmodel.cn/api/coding/paas/v4")
+    } else if base.starts_with("https://open.bigmodel.cn/api/coding") {
+        Some("https://api.z.ai/api/coding/paas/v4")
+    } else {
+        None
+    }
+}
 
 /// A classified failure from one request attempt.
 enum Fail {
@@ -536,6 +590,20 @@ mod tests {
         assert!(!f.is_retryable());
         let f = Fail::Stream("mid-stream".into());
         assert!(!f.is_retryable());
+    }
+
+    #[test]
+    fn mirror_portal_is_bidirectional() {
+        assert_eq!(
+            mirror_base("https://api.z.ai/api/coding/paas/v4"),
+            Some("https://open.bigmodel.cn/api/coding/paas/v4")
+        );
+        assert_eq!(
+            mirror_base("https://open.bigmodel.cn/api/coding/paas/v4"),
+            Some("https://api.z.ai/api/coding/paas/v4")
+        );
+        assert_eq!(mirror_base("https://api.z.ai/api/paas/v4"), None);
+        assert_eq!(mirror_base("https://api.openai.com/v1"), None);
     }
 
     #[test]
