@@ -2,6 +2,7 @@
 //!
 //! The binary does nothing but assemble plugins and hand them to the core.
 //! Everything you can see or do is a plugin; this file is the only glue.
+//! Add a plugin by adding a crate to `crates/` and a line to this list.
 
 use min_core::Plugin;
 
@@ -10,11 +11,11 @@ fn main() {
     // up before anything wants to print; the agent goes last so every tool
     // is registered before the first turn runs.
     let plugins: Vec<Box<dyn Plugin>> = vec![
-        // Box::new(min_repl::Repl::new()),
-        // Box::new(min_llm::LlmPlugin),
-        // Box::new(min_tools_fs::FsPlugin),
-        // Box::new(min_tools_shell::ShellPlugin),
-        // Box::new(min_agent::AgentPlugin::new()),
+        Box::new(min_repl::Repl::new()),        // terminal UI
+        Box::new(min_llm::LlmPlugin),           // streaming LLM client
+        Box::new(min_tools_fs::FsPlugin),       // read / edit / write
+        Box::new(min_tools_shell::ShellPlugin), // bash
+        Box::new(min_agent::AgentPlugin::new()), // the agent loop
     ];
     min_core::run(plugins);
 }

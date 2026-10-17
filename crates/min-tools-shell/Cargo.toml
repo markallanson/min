@@ -1,0 +1,9 @@
+[package]
+name = "min-tools-shell"
+version.workspace = true
+edition.workspace = true
+description = "min plugin: bash tool with timeout and output capture"
+
+[dependencies]
+min-core = { path = "../min-core" }
+serde_json = "1"

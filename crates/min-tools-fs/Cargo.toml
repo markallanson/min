@@ -1,0 +1,9 @@
+[package]
+name = "min-tools-fs"
+version.workspace = true
+edition.workspace = true
+description = "min plugin: read / edit / write file tools"
+
+[dependencies]
+min-core = { path = "../min-core" }
+serde_json = "1"

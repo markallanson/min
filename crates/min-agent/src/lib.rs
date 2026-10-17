@@ -1,0 +1,204 @@
+//! min-agent — the agent loop.
+//!
+//! Owns the conversation. On [`UserInput`] it appends to the history, then
+//! loops: call the LLM service → display text as it streams → run any tool
+//! calls through the core's tool registry → feed results back — until the
+//! model stops asking for tools. There is deliberately nothing clever here:
+//! no subagents, no planning, no context management. A plugin can add that
+//! later; this is the simplest loop that can edit code.
+
+use min_core::{events, Hub, Plugin};
+use serde_json::{json, Value};
+use std::any::Any;
+use std::time::Instant;
+
+/// Safety valve: max LLM↔tool round-trips in a single user turn.
+const MAX_ROUNDS: usize = 50;
+
+pub struct AgentPlugin {
+    messages: Vec<Value>,
+    system: String,
+}
+
+impl AgentPlugin {
+    pub fn new() -> Self {
+        AgentPlugin {
+            messages: Vec::new(),
+            system: String::new(),
+        }
+    }
+}
+
+impl Default for AgentPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Plugin for AgentPlugin {
+    fn name(&self) -> &'static str {
+        "agent"
+    }
+
+    fn start(&mut self, _hub: &Hub) {
+        self.system = build_system_prompt();
+    }
+
+    fn handle(&mut self, hub: &Hub, event: &dyn Any) {
+        if let Some(e) = event.downcast_ref::<events::UserInput>() {
+            let text = e.text.clone();
+            self.turn(hub, &text);
+        } else if event.downcast_ref::<events::ResetConversation>().is_some() {
+            self.messages.clear();
+            hub.emit(events::Info {
+                text: "conversation cleared".into(),
+            });
+        }
+    }
+}
+
+impl AgentPlugin {
+    fn turn(&mut self, hub: &Hub, user_text: &str) {
+        self.messages.push(json!({"role": "user", "content": user_text}));
+        for _ in 0..MAX_ROUNDS {
+            let Some(llm) = hub.service::<min_llm::Llm>() else {
+                hub.emit(events::Error {
+                    text: "no LLM service — is the llm plugin loaded?".into(),
+                });
+                return;
+            };
+            let tools: Vec<Value> = hub
+                .tools()
+                .specs()
+                .iter()
+                .map(|(name, spec)| {
+                    let mut v: Value = serde_json::from_str(spec).unwrap_or_else(|_| json!({}));
+                    v["name"] = json!(name);
+                    v
+                })
+                .collect();
+            let mut on_delta = |t: &str| {
+                hub.emit(events::AssistantDelta { text: t.to_string() });
+            };
+            let message = match llm.complete(&self.system, &self.messages, &tools, &mut on_delta) {
+                Ok(m) => m,
+                Err(e) => {
+                    hub.emit(events::Error { text: e });
+                    return;
+                }
+            };
+            hub.emit(events::MessageEnd {});
+            self.messages
+                .push(json!({"role": "assistant", "content": message["content"].clone()}));
+
+            let calls: Vec<Value> = message["content"]
+                .as_array()
+                .map(|a| a.iter().filter(|b| b["type"] == "tool_use").cloned().collect())
+                .unwrap_or_default();
+            if calls.is_empty() {
+                return;
+            }
+
+            let mut results: Vec<Value> = Vec::new();
+            for call in calls {
+                results.push(self.run_tool(hub, &call));
+            }
+            self.messages
+                .push(json!({"role": "user", "content": results}));
+        }
+        hub.emit(events::Error {
+            text: format!("gave up: more than {MAX_ROUNDS} tool rounds in one turn"),
+        });
+    }
+
+    fn run_tool(&mut self, hub: &Hub, call: &Value) -> Value {
+        let id = call["id"].as_str().unwrap_or_default().to_string();
+        let name = call["name"].as_str().unwrap_or_default().to_string();
+        let input = call["input"].to_string();
+        hub.emit(events::ToolStart {
+            brief: brief(&name, &call["input"]),
+            name: name.clone(),
+        });
+        let t0 = Instant::now();
+        let out = hub.tools().run(&name, &input);
+        let secs = t0.elapsed().as_secs_f64();
+        let ok = out.is_ok();
+        let payload = out.unwrap_or_else(|e| format!("error: {e}"));
+        let note: String = payload
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .chars()
+            .take(100)
+            .collect();
+        hub.emit(events::ToolEnd { ok, secs, note });
+        json!({
+            "type": "tool_result",
+            "tool_use_id": id,
+            "content": payload,
+            "is_error": !ok,
+        })
+    }
+}
+
+/// One glanceable line describing a tool call, for the UI.
+fn brief(_name: &str, input: &Value) -> String {
+    if let Some(c) = input["command"].as_str() {
+        c.lines().next().unwrap_or("").chars().take(80).collect()
+    } else if let Some(p) = input["path"].as_str() {
+        p.chars().take(80).collect()
+    } else {
+        String::new()
+    }
+}
+
+fn build_system_prompt() -> String {
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "?".into());
+    let mut s = format!(
+        r#"You are min — a minimal agentic coding assistant running in a terminal, built as plugins on a tiny core. You may be asked to work on min's own source code.
+
+Environment:
+- cwd: {cwd}
+- platform: {os}/{arch}
+- date: {date}
+
+Working style:
+- Look before you edit: read files (or grep/find via bash) before changing them.
+- The edit tool replaces exact text that must match exactly one place — include enough context to make each old_text unique. Edits apply in order.
+- Prefer small, surgical changes. After changing Rust code, verify with `cargo build` and `cargo test` (bash tool).
+- Be concise. No preamble."#,
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
+        date = utc_date(),
+    );
+    if let Ok(md) = std::fs::read_to_string("AGENTS.md") {
+        s.push_str("\n\n# Project instructions (AGENTS.md)\n\n");
+        s.push_str(&md);
+    }
+    s
+}
+
+/// UTC date from the epoch — avoids a datetime dependency.
+fn utc_date() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+    let (y, m, d) = civil_from_days(secs / 86400);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - 365 * yoe - yoe / 4 + yoe / 100;
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}

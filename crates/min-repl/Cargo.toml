@@ -1,0 +1,9 @@
+[package]
+name = "min-repl"
+version.workspace = true
+edition.workspace = true
+description = "min plugin: terminal UI — raw-mode line editor and streaming display"
+
+[dependencies]
+min-core = { path = "../min-core" }
+libc = "0.2"
