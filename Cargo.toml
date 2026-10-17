@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[package]
+name = "min"
+version.workspace = true
+edition.workspace = true
+description = "a minimal terminal agentic coding harness — everything is a plugin"
+
+[dependencies]
+min-core = { path = "crates/min-core" }
+
+[[bin]]
+name = "min"
+path = "src/main.rs"
