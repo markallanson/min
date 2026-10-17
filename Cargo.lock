@@ -231,6 +231,7 @@ dependencies = [
  "min-herdr",
  "min-llm",
  "min-repl",
+ "min-session",
  "min-tools-clock",
  "min-tools-fs",
  "min-tools-shell",
@@ -277,6 +278,13 @@ name = "min-repl"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "min-core",
+]
+
+[[package]]
+name = "min-session"
+version = "0.1.0"
+dependencies = [
  "min-core",
 ]
 

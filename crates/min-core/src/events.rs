@@ -61,5 +61,25 @@ pub struct SystemPromptSection {
 /// re-read, so edited or deleted files leave nothing stale behind.
 pub struct ClearPromptSections {}
 
+/// A session began (session → everyone). The session plugin announces the
+/// first session once every plugin has started — it returns this from its
+/// first `wait`, so the broadcast reaches all plugins, itself included —
+/// and a fresh one each time the conversation is cleared
+/// (`ResetConversation`), preceded by [`SessionEnd`] for the session it
+/// replaces. Ids are epoch seconds, stepped past the previous id when two
+/// sessions begin inside one second. A plugin that needs to know which
+/// session it is in keeps the last `id` it saw in its own state; `parent`
+/// links a session to the one that asked for it (`--parent-session`).
+pub struct SessionStart {
+    pub id: u64,
+    pub parent: Option<u64>,
+}
+
+/// A session closed (session → everyone). Emitted immediately before the
+/// [`SessionStart`] of its replacement when the conversation is cleared.
+pub struct SessionEnd {
+    pub id: u64,
+}
+
 /// Shut down the harness (repl → everyone).
 pub struct Quit {}

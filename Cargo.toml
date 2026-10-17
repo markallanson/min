@@ -23,6 +23,7 @@ min-tools-shell = { path = "crates/min-tools-shell" }
 min-tools-clock = { path = "crates/min-tools-clock" }
 min-context = { path = "crates/min-context" }
 min-herdr = { path = "crates/min-herdr" }
+min-session = { path = "crates/min-session" }
 
 [[bin]]
 name = "min"

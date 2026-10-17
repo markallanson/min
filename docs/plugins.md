@@ -114,7 +114,8 @@ plugins never import each other:
 | `MessageEnd` | agent → repl | (none) |
 | `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note |
 | `Info` / `Error` | any → repl | human-facing status |
-| `ResetConversation` | repl → everyone | (none) — context also re-reads instruction files on it |
+| `SessionStart` / `SessionEnd` | session → everyone | session id + parent / id — a fresh id on boot and `/clear` |
+| `ResetConversation` | repl → everyone | (none) — context re-reads instruction files, session re-rolls the id |
 | `ClearPromptSections` | context → agent | (none) — agent drops its collected system-prompt sections |
 | `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
 | `Quit` | repl → everyone | (none) — the repl calls `hub.quit()` on it |
@@ -128,7 +129,11 @@ authors:
 
 - **Emit from `wait`, not from `handle`,** if you must not miss an event
   yourself: an event returned from `wait` is delivered *after* `wait`
-  returns, so its own producer receives it too.
+  returns, so its own producer receives it too. The same trick makes a
+  startup broadcast complete: min-session announces the first session from
+  its first `wait`, because the core only calls `wait` after *every*
+  plugin's `start` — anything emitted in `start` is missed by all plugins
+  loaded later.
 - Emit `events::Info` / `events::Error` for anything a human should see —
   don't print from your plugin; the repl owns the terminal.
 - To add a brand-new event *type*, put it in `min-core/src/events.rs` —

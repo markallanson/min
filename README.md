@@ -43,9 +43,15 @@ export MIN_MODEL=<model>                           # whatever it serves
 | `ANTHROPIC_API_KEY` / `MIN_API_KEY` / `OPENAI_API_KEY` | — | API key |
 | `HTTPS_PROXY`, `NO_COLOR` | — | honoured as usual |
 
-Commands: `/help`, `/clear` (reset conversation), `/quit`. Ctrl-C exits at any
-moment (even mid-generation); Ctrl-D quits at an empty prompt. Piping works,
-for scripting: `echo 'explain this repo' | min`.
+```sh
+min                          # a fresh session id every run
+min --session 1729180000     # pin the first session's id
+min --parent-session 1729179990   # the first session is its child
+```
+
+Commands: `/help`, `/clear` (new session id + reset conversation), `/quit`.
+Ctrl-C exits at any moment (even mid-generation); Ctrl-D quits at an empty
+prompt. Piping works, for scripting: `echo 'explain this repo' | min`.
 
 ### 429s — two very different meanings
 
@@ -88,7 +94,8 @@ from this repository and ask it to add a plugin.
 
 ## Limitations (on purpose, for now)
 
-- single conversation, no session persistence, no context-window management
+- single conversation, no session persistence (a session is just the id for
+  the current run, re-rolled on `/clear`), no context-window management
 - no way to interrupt a running turn except Ctrl-C (which exits min)
 - no token/cost accounting, no retries mid-stream, no diff preview
 - multiline input is one line; no tab completion
@@ -98,7 +105,7 @@ from this repository and ask it to add a plugin.
 
 See [docs/architecture.md](docs/architecture.md) for a guided tour of every
 crate. In brief: `crates/min-core` is the loop; `min-repl`, `min-llm`,
-`min-agent`, `min-context`, `min-herdr` and `min-tools-*` are the plugins
-(UI, LLM client, agent loop, project instructions, Herdr reporting,
-filesystem/shell/clock tools); `src/main.rs` is the only glue — the plugin
-list.
+`min-agent`, `min-context`, `min-session`, `min-herdr` and `min-tools-*` are
+the plugins (UI, LLM client, agent loop, project instructions, session
+identity, Herdr reporting, filesystem/shell/clock tools); `src/main.rs` is
+the only glue — the plugin list.

@@ -1,0 +1,8 @@
+[package]
+name = "min-session"
+version.workspace = true
+edition.workspace = true
+description = "session identity: a unique id for the work min is doing, announced to every plugin"
+
+[dependencies]
+min-core = { path = "../min-core" }

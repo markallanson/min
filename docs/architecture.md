@@ -25,6 +25,7 @@ plugin — the hooks, the three shapes, a complete worked example — see
     │  plugins, in load order (never import each other — only min-core)
     │
     │   min-repl          terminal UI: raw-mode editor, streaming output
+    │   min-session       session identity: unique id + parent, announced to all
     │   min-llm           streaming LLM client (anthropic + openai wire)
     │   min-tools-fs      read / edit / write
     │   min-tools-shell   bash with timeout + output capture
@@ -155,7 +156,8 @@ The catalogue — pure data, no behaviour:
 | `MessageEnd` | agent → repl | (none) |
 | `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note |
 | `Info` / `Error` | any → repl | human-facing status |
-| `ResetConversation` | repl → everyone | (none) — context re-reads AGENTS.md on it |
+| `SessionStart` / `SessionEnd` | session → everyone | session id + parent / id — a fresh id on boot and `/clear` |
+| `ResetConversation` | repl → everyone | (none) — context re-reads AGENTS.md, session re-rolls the id on it |
 | `ClearPromptSections` | context → agent | (none) — agent drops its collected sections |
 | `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
 | `Quit` | repl → everyone | (none) — repl calls `hub.quit()` on it |
@@ -246,9 +248,9 @@ all this: the agent caps a turn at 50 LLM↔tool rounds.
 ## Dependency rules
 
 ```
- main ──▶ repl    llm    tools-fs   tools-shell   tools-clock   agent
-           │       │        │           │              │          │└┄┄▶ min-llm (type only, see below)
-           └───────┴────────┴───────────┴──────────────┴──────────┘
+ main ──▶ session  repl    llm    tools-fs   tools-shell   tools-clock   agent
+            │       │       │        │           │              │          │└┄┄▶ min-llm (type only, see below)
+            └───────┴───────┴────────┴───────────┴──────────────┴──────────┘
                                     │
                                     ▼
                                  min-core
@@ -290,6 +292,8 @@ crates/min-repl          terminal UI (raw mode, ANSI, input history)
 crates/min-llm           Anthropic Messages + OpenAI chat clients (streaming)
 crates/min-agent         conversation state + tool loop + system prompt
 crates/min-context       AGENTS.md (~/.config/min first, then whole tree, root-first) → system prompt
+crates/min-session       session identity: epoch-second id (+ optional parent), announced
+                         to every plugin on boot (from first `wait`) and on each `/clear`
 crates/min-tools-fs      read / edit / write
 crates/min-tools-shell   bash (timeout, capture, truncation)
 crates/min-tools-clock   the plugins.md worked example, made real
