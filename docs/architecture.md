@@ -26,6 +26,8 @@ plugin — the hooks, the three shapes, a complete worked example — see
     │
     │   min-repl          terminal UI: raw-mode editor, streaming output
     │   min-session       session identity: unique id + parent, announced to all
+    │   min-session-log   session activity → one append-only log per session
+    │                     (XDG state dir)
     │   min-llm           streaming LLM client (anthropic + openai wire)
     │   min-tools-fs      read / edit / write
     │   min-tools-shell   bash with timeout + output capture
@@ -294,6 +296,9 @@ crates/min-agent         conversation state + tool loop + system prompt
 crates/min-context       AGENTS.md (~/.config/min first, then whole tree, root-first) → system prompt
 crates/min-session       session identity: epoch-second id (+ optional parent), announced
                          to every plugin on boot (from first `wait`) and on each `/clear`
+crates/min-session-log   session activity → one append-only `<id>.log` per session in
+                         `$XDG_STATE_HOME/min/sessions` (default `~/.local/state/...`):
+                         header, prompts, assistant messages, tool calls, errors
 crates/min-tools-fs      read / edit / write
 crates/min-tools-shell   bash (timeout, capture, truncation)
 crates/min-tools-clock   the plugins.md worked example, made real

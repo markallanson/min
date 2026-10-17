@@ -232,6 +232,7 @@ dependencies = [
  "min-llm",
  "min-repl",
  "min-session",
+ "min-session-log",
  "min-tools-clock",
  "min-tools-fs",
  "min-tools-shell",
@@ -286,6 +287,14 @@ name = "min-session"
 version = "0.1.0"
 dependencies = [
  "min-core",
+]
+
+[[package]]
+name = "min-session-log"
+version = "0.1.0"
+dependencies = [
+ "min-core",
+ "serde_json",
 ]
 
 [[package]]

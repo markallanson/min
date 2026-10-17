@@ -47,6 +47,7 @@ fn main() {
     // every tool is registered before the first turn runs.
     let plugins: Vec<Box<dyn Plugin>> = vec![
         Box::new(min_session::SessionPlugin::new(session, parent)), // session id
+        Box::new(min_session_log::SessionLogPlugin::new()), // session activity → XDG state log
         Box::new(min_herdr::HerdrPlugin::new()), // herdr state reporter (no-op outside herdr)
         Box::new(min_repl::Repl::new()),        // terminal UI
         Box::new(min_llm::LlmPlugin),           // streaming LLM client
