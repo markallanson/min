@@ -1,0 +1,8 @@
+[package]
+name = "min-context"
+version.workspace = true
+edition.workspace = true
+description = "min plugin: project context — reads AGENTS.md into the agent's system prompt"
+
+[dependencies]
+min-core = { path = "../min-core" }

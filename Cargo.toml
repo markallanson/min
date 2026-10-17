@@ -21,6 +21,7 @@ min-agent = { path = "crates/min-agent" }
 min-tools-fs = { path = "crates/min-tools-fs" }
 min-tools-shell = { path = "crates/min-tools-shell" }
 min-tools-clock = { path = "crates/min-tools-clock" }
+min-context = { path = "crates/min-context" }
 
 [[bin]]
 name = "min"

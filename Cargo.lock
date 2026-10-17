@@ -226,6 +226,7 @@ name = "min"
 version = "0.1.0"
 dependencies = [
  "min-agent",
+ "min-context",
  "min-core",
  "min-llm",
  "min-repl",
@@ -241,6 +242,13 @@ dependencies = [
  "min-core",
  "min-llm",
  "serde_json",
+]
+
+[[package]]
+name = "min-context"
+version = "0.1.0"
+dependencies = [
+ "min-core",
 ]
 
 [[package]]

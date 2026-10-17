@@ -115,6 +115,7 @@ plugins never import each other:
 | `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note |
 | `Info` / `Error` | any → repl | human-facing status |
 | `ResetConversation` | repl → agent | (none) |
+| `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
 | `Quit` | repl → everyone | (none) — the repl calls `hub.quit()` on it |
 
 Delivery rules in one breath: `hub.emit(e)` is immediate, synchronous and

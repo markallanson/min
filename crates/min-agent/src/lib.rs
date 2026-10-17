@@ -18,6 +18,9 @@ const MAX_ROUNDS: usize = 50;
 pub struct AgentPlugin {
     messages: Vec<Value>,
     system: String,
+    /// Extra prompt sections collected from `SystemPromptSection` events
+    /// during `start` (e.g. the project's AGENTS.md, via min-context).
+    sections: Vec<(String, String)>,
 }
 
 impl AgentPlugin {
@@ -25,6 +28,7 @@ impl AgentPlugin {
         AgentPlugin {
             messages: Vec::new(),
             system: String::new(),
+            sections: Vec::new(),
         }
     }
 }
@@ -45,7 +49,9 @@ impl Plugin for AgentPlugin {
     }
 
     fn handle(&mut self, hub: &Hub, event: &dyn Any) {
-        if let Some(e) = event.downcast_ref::<events::UserInput>() {
+        if let Some(e) = event.downcast_ref::<events::SystemPromptSection>() {
+            self.sections.push((e.title.clone(), e.body.clone()));
+        } else if let Some(e) = event.downcast_ref::<events::UserInput>() {
             let text = e.text.clone();
             self.turn(hub, &text);
         } else if event.downcast_ref::<events::ResetConversation>().is_some() {
@@ -59,6 +65,11 @@ impl Plugin for AgentPlugin {
 
 impl AgentPlugin {
     fn turn(&mut self, hub: &Hub, user_text: &str) {
+        // Base prompt plus any sections plugins handed us at startup.
+        let mut system = self.system.clone();
+        for (title, body) in &self.sections {
+            system.push_str(&format!("\n\n# {title}\n\n{body}"));
+        }
         self.messages.push(json!({"role": "user", "content": user_text}));
         for _ in 0..MAX_ROUNDS {
             let Some(llm) = hub.service::<min_llm::Llm>() else {
@@ -83,8 +94,7 @@ impl AgentPlugin {
             let mut on_status = |s: &str| {
                 hub.emit(events::Info { text: s.to_string() });
             };
-            let message =
-                match llm.complete(&self.system, &self.messages, &tools, &mut on_delta, &mut on_status) {
+            let message = match llm.complete(&system, &self.messages, &tools, &mut on_delta, &mut on_status) {
                 Ok(m) => m,
                 Err(e) => {
                     hub.emit(events::Error { text: e });
@@ -160,7 +170,7 @@ fn build_system_prompt() -> String {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "?".into());
-    let mut s = format!(
+    let s = format!(
         r#"You are min — a minimal agentic coding assistant running in a terminal, built as plugins on a tiny core. You may be asked to work on min's own source code.
 
 Environment:
@@ -177,10 +187,6 @@ Working style:
         arch = std::env::consts::ARCH,
         date = utc_date(),
     );
-    if let Ok(md) = std::fs::read_to_string("AGENTS.md") {
-        s.push_str("\n\n# Project instructions (AGENTS.md)\n\n");
-        s.push_str(&md);
-    }
     s
 }
 
@@ -205,4 +211,36 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use min_core::Hub;
+
+    #[test]
+    fn prompt_sections_arrive_via_events_not_file_reads() {
+        let mut agent = AgentPlugin::new();
+        let hub = Hub::new(vec![]);
+        assert!(agent.sections.is_empty());
+        assert!(!agent.system.contains("Project instructions"));
+
+        // What min-context does in start(): emit, then the core delivers.
+        agent.handle(
+            &hub,
+            &events::SystemPromptSection {
+                title: "Project instructions (AGENTS.md)".into(),
+                body: "rule one".into(),
+            },
+        );
+        agent.handle(
+            &hub,
+            &events::UserInput { text: "hi".into() }, // unrelated events ignored
+        );
+        assert_eq!(agent.sections.len(), 1);
+        assert_eq!(agent.sections[0], (
+            "Project instructions (AGENTS.md)".into(),
+            "rule one".into(),
+        ));
+    }
 }

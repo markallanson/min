@@ -29,6 +29,7 @@ plugin — the hooks, the three shapes, a complete worked example — see
     │   min-tools-fs      read / edit / write
     │   min-tools-shell   bash with timeout + output capture
     │   min-tools-clock   current UTC time
+    │   min-context       project files (AGENTS.md) → system prompt
     │   min-agent         the agent loop: LLM ↔ tools until done
     ▼
  ┌──────────────── min-core — the loop (zero deps) ───────────────┐
@@ -154,6 +155,7 @@ The catalogue — pure data, no behaviour:
 | `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note |
 | `Info` / `Error` | any → repl | human-facing status |
 | `ResetConversation` | repl → agent | (none) |
+| `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
 | `Quit` | repl → everyone | (none) — repl calls `hub.quit()` on it |
 
 ### Semantics
@@ -285,6 +287,7 @@ crates/min-core          the loop: Plugin, Hub, events, Tool, ToolRegistry
 crates/min-repl          terminal UI (raw mode, ANSI, input history)
 crates/min-llm           Anthropic Messages + OpenAI chat clients (streaming)
 crates/min-agent         conversation state + tool loop + system prompt
+crates/min-context       AGENTS.md → system prompt (via SystemPromptSection)
 crates/min-tools-fs      read / edit / write
 crates/min-tools-shell   bash (timeout, capture, truncation)
 crates/min-tools-clock   the plugins.md worked example, made real

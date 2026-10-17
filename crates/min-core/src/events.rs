@@ -44,5 +44,13 @@ pub struct Error {
 /// Forget the conversation and start fresh (repl → agent).
 pub struct ResetConversation {}
 
+/// A section to append to the agent's system prompt (context → agent).
+/// Emitted once at startup by context plugins, e.g. min-context handing
+/// the project's AGENTS.md to the agent.
+pub struct SystemPromptSection {
+    pub title: String,
+    pub body: String,
+}
+
 /// Shut down the harness (repl → everyone).
 pub struct Quit {}

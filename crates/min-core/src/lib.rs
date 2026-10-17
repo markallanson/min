@@ -69,7 +69,9 @@ pub struct Hub {
 }
 
 impl Hub {
-    fn new(plugins: Vec<Box<dyn Plugin>>) -> Self {
+    /// Build a hub by hand — public so plugins (and plugin tests) can
+    /// construct one without going through [`run`].
+    pub fn new(plugins: Vec<Box<dyn Plugin>>) -> Self {
         Hub {
             plugins: RefCell::new(plugins.into_iter().map(RefCell::new).collect()),
             services: RefCell::new(HashMap::new()),
