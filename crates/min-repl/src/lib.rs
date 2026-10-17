@@ -1,8 +1,8 @@
 //! min-repl — the terminal UI.
 //!
-//! Owns stdin/stdout: prompts, line editing (backspace, ↑/↓ history),
-//! slash commands, and display of every event the rest of min emits
-//! (streaming assistant text, tool activity, info/errors).
+//! Owns stdin/stdout: prompts, line editing (cursor movement, backspace,
+//! delete, ↑/↓ history), slash commands, and display of every event the rest
+//! of min emits (streaming assistant text, tool activity, info/errors).
 //!
 //! When stdin is not a tty (piped input) raw mode is skipped and lines are
 //! read as-is, so min can be scripted: `echo 'hello' | min`.
@@ -20,7 +20,8 @@ pub struct Repl {
     tty: bool,
     history: Vec<String>,
     hist_idx: usize,
-    buf: Vec<u8>,
+    buf: Vec<u8>,  // input so far; always valid UTF-8
+    pos: usize,    // edit cursor: byte offset into `buf`, always a char boundary
     at_line_start: bool,
     raw: Option<RawMode>,
 }
@@ -32,6 +33,7 @@ impl Repl {
             history: Vec::new(),
             hist_idx: 0,
             buf: Vec::new(),
+            pos: 0,
             at_line_start: true,
             raw: None,
         }
@@ -73,7 +75,9 @@ impl Plugin for Repl {
         self.hist_idx = self.history.len();
         match line.as_str() {
             "/help" => {
-                self.put_line(&ansi::dim("/help · /clear · /quit — ctrl-d quits, ↑/↓ history"));
+                self.put_line(&ansi::dim(
+                    "/help · /clear · /quit — ctrl-d quits, ↑/↓ history, ←/→ edit",
+                ));
                 None
             }
             "/clear" => Some(Box::new(events::ResetConversation {})),
@@ -165,57 +169,210 @@ impl Repl {
                     self.at_line_start = true;
                     let s = String::from_utf8_lossy(&self.buf).into_owned();
                     self.buf.clear();
+                    self.pos = 0;
                     return Some(s);
                 }
-                0x7f | 0x08 => {
-                    if !self.buf.is_empty() {
-                        self.buf.pop();
-                        // keep UTF-8 characters whole
-                        while self.buf.last().is_some_and(|c| c & 0xC0 == 0x80) {
-                            self.buf.pop();
-                        }
-                        self.write("\u{8} \u{8}");
-                    }
-                }
+                0x7f | 0x08 => self.backspace(),
                 0x04 => {
+                    // ctrl-d quits only on an empty line; otherwise it deletes
+                    // forward like a normal shell.
                     if self.buf.is_empty() {
                         self.write("\n");
                         return None;
                     }
+                    self.delete_forward();
                 }
                 0x15 => {
                     // ctrl-u: clear the line
-                    for _ in 0..self.buf.len() {
-                        self.write("\u{8} \u{8}");
-                    }
+                    self.pos = 0;
                     self.buf.clear();
+                    self.repaint();
+                }
+                0x01 => {
+                    // ctrl-a: start of line
+                    self.pos = 0;
+                    self.repaint();
+                }
+                0x05 => {
+                    // ctrl-e: end of line
+                    self.pos = self.buf.len();
+                    self.repaint();
+                }
+                0x17 => {
+                    // ctrl-w: delete the word before the cursor
+                    let before = word_start(&self.buf, self.pos);
+                    self.buf.drain(before..self.pos);
+                    self.pos = before;
+                    self.repaint();
+                }
+                0x0b => {
+                    // ctrl-k: kill from cursor to end of line
+                    self.buf.truncate(self.pos);
+                    self.repaint();
                 }
                 0x1b => {
                     self.escape()?;
                 }
                 0x00..=0x1f => {}
                 _ => {
-                    self.buf.push(b);
-                    let mut out = std::io::stdout().lock();
-                    let _ = out.write_all(&[b]);
-                    let _ = out.flush();
+                    if self.pos == self.buf.len() {
+                        // Fast path at end-of-line: append and just echo.
+                        self.buf.push(b);
+                        self.pos = self.buf.len();
+                        let mut out = std::io::stdout().lock();
+                        let _ = out.write_all(&[b]);
+                        let _ = out.flush();
+                    } else {
+                        // Inserting before a continuation byte would tear a
+                        // multi-byte character; snap to the char it belongs to.
+                        while self.pos < self.buf.len() && self.buf[self.pos] & 0xC0 == 0x80 {
+                            self.pos += 1;
+                        }
+                        self.buf.insert(self.pos, b);
+                        self.pos += 1;
+                        self.repaint();
+                    }
                 }
             }
         }
     }
 
-    /// After ESC: handle `ESC [ A/B` (up/down history); swallow the rest.
+    /// Remove the character before the cursor (backspace).
+    fn backspace(&mut self) {
+        if self.pos == 0 {
+            return;
+        }
+        // Step back to the start of the preceding UTF-8 character.
+        let mut start = self.pos - 1;
+        while start > 0 && self.buf[start] & 0xC0 == 0x80 {
+            start -= 1;
+        }
+        let at_end = self.pos == self.buf.len();
+        self.buf.drain(start..self.pos);
+        self.pos = start;
+        if at_end {
+            self.write("\u{8} \u{8}");
+        } else {
+            self.repaint();
+        }
+    }
+
+    /// Remove the character at the cursor (delete key).
+    fn delete_forward(&mut self) {
+        if self.pos >= self.buf.len() {
+            return;
+        }
+        let mut end = self.pos + 1;
+        while end < self.buf.len() && self.buf[end] & 0xC0 == 0x80 {
+            end += 1;
+        }
+        self.buf.drain(self.pos..end);
+        self.repaint();
+    }
+
+    /// Redraw the input line and place the terminal cursor at the edit
+    /// position. Column math uses displayed characters, not bytes, and the
+    /// prompt is a fixed two columns ("❯ ").
+    fn repaint(&mut self) {
+        self.write("\r\x1b[K");
+        self.prompt();
+        self.write(&String::from_utf8_lossy(&self.buf));
+        let col = PROMPT_COLS + self.char_count_before(self.pos);
+        self.write(&format!("\r\x1b[{col}G")); // column (1-based)
+    }
+
+    /// Displayed characters (not bytes) in `buf[..pos]`.
+    fn char_count_before(&self, pos: usize) -> usize {
+        String::from_utf8_lossy(&self.buf[..pos]).chars().count()
+    }
+
+    /// After ESC: CSI cursor movement, Home/End/Delete, history; swallow the rest.
     fn escape(&mut self) -> Option<()> {
         let b1 = read_byte()?;
-        let b2 = read_byte()?;
-        if b1 == b'[' {
-            match b2 {
-                b'A' => self.recall(-1),
-                b'B' => self.recall(1),
-                _ => {}
+        if b1 != b'[' {
+            return Some(());
+        }
+        // Accumulate parameter bytes (and intermediates), then the final byte.
+        let mut params = Vec::new();
+        let final_byte;
+        loop {
+            let b = read_byte()?;
+            if (0x20..=0x3f).contains(&b) {
+                params.push(b);
+            } else {
+                final_byte = b;
+                break;
             }
         }
+        // Numeric parameters, e.g. "3" in `ESC [ 3 ~` (Delete).
+        let nums: Vec<u32> = params
+            .iter()
+            .filter(|c| c.is_ascii_digit())
+            .fold((Vec::new(), false), |(mut acc, in_num), &c| {
+                if let (Some(last), true) = (acc.last_mut(), in_num) {
+                    if *last < 10_000 {
+                        *last = *last * 10 + (c - b'0') as u32;
+                    }
+                } else {
+                    acc.push((c - b'0') as u32);
+                }
+                (acc, true)
+            })
+            .0;
+        match final_byte {
+            b'A' => self.recall(-1),
+            b'B' => self.recall(1),
+            b'C' => self.right(),
+            b'D' => self.left(),
+            b'H' => {
+                self.pos = 0;
+                self.repaint();
+            }
+            b'F' => {
+                self.pos = self.buf.len();
+                self.repaint();
+            }
+            b'~' if !params.contains(&b'?') => match nums.first() {
+                Some(1 | 7) => {
+                    self.pos = 0;
+                    self.repaint();
+                }
+                Some(3) => self.delete_forward(),
+                Some(4 | 8) => {
+                    self.pos = self.buf.len();
+                    self.repaint();
+                }
+                _ => {}
+            },
+            _ => {}
+        }
         Some(())
+    }
+
+    /// Move the cursor one character left (`←`).
+    fn left(&mut self) {
+        if self.pos == 0 {
+            return;
+        }
+        let mut p = self.pos - 1;
+        while p > 0 && self.buf[p] & 0xC0 == 0x80 {
+            p -= 1;
+        }
+        self.pos = p;
+        self.write("\x1b[1D");
+    }
+
+    /// Move the cursor one character right (`→`).
+    fn right(&mut self) {
+        if self.pos >= self.buf.len() {
+            return;
+        }
+        let mut p = self.pos + 1;
+        while p < self.buf.len() && self.buf[p] & 0xC0 == 0x80 {
+            p += 1;
+        }
+        self.pos = p;
+        self.write("\x1b[1C");
     }
 
     fn recall(&mut self, dir: i32) {
@@ -229,10 +386,9 @@ impl Repl {
         } else {
             self.history[self.hist_idx].clone()
         };
-        self.write("\r\x1b[K"); // clear line
-        self.prompt();
-        self.write(&text);
         self.buf = text.into_bytes();
+        self.pos = self.buf.len();
+        self.repaint();
     }
 }
 
@@ -241,6 +397,59 @@ fn read_byte() -> Option<u8> {
     match std::io::stdin().read(&mut b) {
         Ok(1) => Some(b[0]),
         _ => None,
+    }
+}
+
+/// Byte index of the start of the word before `pos` (for ctrl-w).
+/// A word is a run of non-whitespace; trailing whitespace before the cursor
+/// is deleted too, like every other shell.
+fn word_start(buf: &[u8], pos: usize) -> usize {
+    let mut i = pos;
+    while i > 0 && buf[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    while i > 0 && !buf[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    i
+}
+
+/// Width in columns of the "❯ " prompt (glyph + trailing space).
+const PROMPT_COLS: usize = 2;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // No stdin/stdout here: these exercise the pure editing helpers.
+
+    #[test]
+    fn word_start_basic() {
+        let b = b"hello world";
+        assert_eq!(word_start(b, b.len()), 6); // start of "world"
+        assert_eq!(word_start(b, 5), 0); // start of "hello"
+    }
+
+    #[test]
+    fn word_start_eats_trailing_whitespace() {
+        let b = b"foo   ";
+        assert_eq!(word_start(b, b.len()), 0);
+    }
+
+    #[test]
+    fn word_start_boundaries() {
+        assert_eq!(word_start(b"", 0), 0);
+        assert_eq!(word_start(b"abc", 0), 0);
+        assert_eq!(word_start(b"a b", 2), 0); // "a " + trailing space deleted
+    }
+
+    #[test]
+    fn char_count_multibyte() {
+        let mut r = Repl::new();
+        r.buf = "héllo".to_string().into_bytes(); // é is 2 bytes
+        assert_eq!(r.char_count_before(r.buf.len()), 5);
+        // cursor in the middle, on a char boundary after 'é'
+        assert_eq!(r.char_count_before(3), 2);
     }
 }
 
