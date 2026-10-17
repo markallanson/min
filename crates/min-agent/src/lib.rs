@@ -13,7 +13,7 @@ use std::any::Any;
 use std::time::Instant;
 
 /// Safety valve: max LLM↔tool round-trips in a single user turn.
-const MAX_ROUNDS: usize = 50;
+const MAX_ROUNDS: usize = 1000;
 
 pub struct AgentPlugin {
     messages: Vec<Value>,
