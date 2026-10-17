@@ -15,6 +15,7 @@ fn main() {
         Box::new(min_llm::LlmPlugin),           // streaming LLM client
         Box::new(min_tools_fs::FsPlugin),       // read / edit / write
         Box::new(min_tools_shell::ShellPlugin), // bash
+        Box::new(min_tools_clock::ClockPlugin),   // current UTC time
         Box::new(min_agent::AgentPlugin::new()), // the agent loop
     ];
     min_core::run(plugins);

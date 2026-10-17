@@ -1,0 +1,8 @@
+[package]
+name = "min-tools-clock"
+version.workspace = true
+edition.workspace = true
+description = "min plugin: clock tool returning the current UTC time"
+
+[dependencies]
+min-core = { path = "../min-core" }

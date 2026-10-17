@@ -229,6 +229,7 @@ dependencies = [
  "min-core",
  "min-llm",
  "min-repl",
+ "min-tools-clock",
  "min-tools-fs",
  "min-tools-shell",
 ]
@@ -260,6 +261,13 @@ name = "min-repl"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "min-core",
+]
+
+[[package]]
+name = "min-tools-clock"
+version = "0.1.0"
+dependencies = [
  "min-core",
 ]
 

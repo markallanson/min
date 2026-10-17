@@ -144,5 +144,6 @@ crates/min-llm           Anthropic Messages + OpenAI chat client (streaming)
 crates/min-agent         conversation + tool loop, system prompt
 crates/min-tools-fs      read / edit / write
 crates/min-tools-shell   bash (timeout, output capture, truncation)
+crates/min-tools-clock  clock tool (the README example, built by min itself)
 src/main.rs              the only glue
 ```
