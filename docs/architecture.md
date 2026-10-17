@@ -287,7 +287,7 @@ crates/min-core          the loop: Plugin, Hub, events, Tool, ToolRegistry
 crates/min-repl          terminal UI (raw mode, ANSI, input history)
 crates/min-llm           Anthropic Messages + OpenAI chat clients (streaming)
 crates/min-agent         conversation state + tool loop + system prompt
-crates/min-context       AGENTS.md → system prompt (via SystemPromptSection)
+crates/min-context       AGENTS.md (whole tree, root-first) → system prompt
 crates/min-tools-fs      read / edit / write
 crates/min-tools-shell   bash (timeout, capture, truncation)
 crates/min-tools-clock   the plugins.md worked example, made real
