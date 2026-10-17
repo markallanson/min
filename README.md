@@ -2,8 +2,8 @@
 
 A terminal agentic coding harness in Rust with a deliberately tiny core.
 **Every feature — UI, LLM client, tools, the agent loop itself — is a plugin.**
-The core coordinates plugins and does nothing else. It is ~340 lines with
-**zero dependencies**.
+The core is only a loop: it loads plugins and pumps events between them, with
+zero functionality of its own. It is ~340 lines with **zero dependencies**.
 
 ```
 ┌─────────────────────────── min binary (21 lines) ───────────────────────────┐
@@ -80,15 +80,21 @@ plan/endpoint mismatch, so check the message body:
 
 ## Design rules
 
-1. **The core does nothing but coordinate.** `min-core` has no I/O, no
-   async, no deps. It cannot even print. Every capability is a plugin.
-2. **Plugins never import each other.** They communicate only through
+1. **The core is only a loop.** It contains zero functionality and zero
+   policy: load plugins, dispatch events, repeat. `min-core` has no I/O, no
+   async, no deps — it cannot even print. When something is missing, the
+   default answer is a new plugin, never core code; touch the core only when
+   plugins cannot express the feature at all.
+2. **Every capability is a plugin.** UI, LLM client, tools, even the agent
+   loop itself — all of it lives in plugin crates and can be removed
+   independently.
+3. **Plugins never import each other.** They communicate only through
    core-owned vocabulary: `emit(Event)`, `service::<T>()`, `tools()`.
    Drop a plugin crate from the build and the rest still runs.
-3. **Synchronous, single-threaded, in-order.** `emit` delivers immediately.
+4. **Synchronous, single-threaded, in-order.** `emit` delivers immediately.
    Idle work happens in `Plugin::wait`, which may block (the repl blocks on
    stdin — that's the whole event source). No tokio, no channels, no locks.
-4. **Complexity lives at the edge.** The biggest plugin (llm, ~430 lines)
+5. **Complexity lives at the edge.** The biggest plugin (llm, ~430 lines)
    absorbs wire-format uglyness so the agent loop can stay trivial.
 
 ### Event semantics
