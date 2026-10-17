@@ -13,18 +13,21 @@
 //! ever spawned. This keeps min portable — the same binary runs inside and
 //! outside a Herdr pane.
 //!
-//! The integration is a pure listener: it maps min's event vocabulary onto
-//! Herdr's `idle` / `working` / `blocked` states.
+//! The integration registers at `start` (one `idle` report, so the pane
+//! shows min from launch — Herdr only tracks an agent once it has heard from
+//! it) and is thereafter a pure listener: it maps min's events onto Herdr's
+//! `idle` / `working` / `blocked` states.
 //!
-//! | min event    | herdr state |
+//! | min moment   | herdr state |
 //! |--------------|-------------|
+//! | `start`      | `idle` — registers the agent |
 //! | `UserInput`  | `working`   |
 //! | `MessageEnd` | `idle`      |
 //! | `Error`      | `blocked`   |
 //! | `Quit`       | release     |
 //!
-//! Reports go out synchronously from `handle`; a report is one fast local
-//! spawn against Herdr's socket, and Herdr is expected to keep up. `--seq`
+//! Reports go out synchronously from `start`/`handle`; a report is one fast
+//! local spawn against Herdr's socket, and Herdr is expected to keep up. `--seq`
 //! is strictly increasing per process so Herdr can drop stale, out-of-order
 //! reports from the same source.
 
@@ -139,6 +142,10 @@ impl Plugin for HerdrPlugin {
                 bin: std::env::var("HERDR_BIN_PATH").unwrap_or_default(),
                 pane: std::env::var("HERDR_PANE_ID").unwrap_or_default(),
             });
+            // Register at once, not at the first message: Herdr only tracks
+            // an agent after its first report, so without this the pane would
+            // show nothing until the user typed. min is idle at startup.
+            self.report(&["--state", "idle"]);
         }
     }
 
@@ -155,7 +162,8 @@ impl Plugin for HerdrPlugin {
         } else if event.downcast_ref::<events::Error>().is_some() {
             self.report(&["--state", "blocked"]);
         } else if event.downcast_ref::<events::Quit>().is_some() {
-            // When the agent exits, release the same source's lifecycle
+            // When min exits (any path that reaches the bus: /quit, ctrl-d,
+            // ctrl-c at the prompt), release the same source's lifecycle
             // authority. The repl calls hub.quit() on this same event, so
             // this runs once, at the very end.
             self.release();

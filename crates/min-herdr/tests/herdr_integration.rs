@@ -50,6 +50,13 @@ struct FakeHerdr {
     log: std::path::PathBuf,
 }
 
+/// The log line the plugin emits for one state, seq `n`.
+fn report_line(n: u64, state: &str) -> String {
+    format!("pane report-agent pane-test --source custom:min --agent min --seq {n} --state {state}")
+}
+
+const RELEASE_LINE: &str = "pane release-agent pane-test --source custom:min --agent min";
+
 fn install_fake_herdr(tag: &str) -> FakeHerdr {
     let dir = std::env::temp_dir().join(format!("min-herdr-it-{}-{tag}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -81,7 +88,7 @@ fn harness() -> Vec<Box<dyn Plugin>> {
 }
 
 #[test]
-fn reports_lifecycle_then_releases_via_the_fake_herdr_cli() {
+fn registers_at_start_reports_lifecycle_then_releases() {
     let _guard = ENV_LOCK.lock().unwrap();
     let fake = install_fake_herdr("flow");
     set_herdr_env(&fake);
@@ -93,10 +100,11 @@ fn reports_lifecycle_then_releases_via_the_fake_herdr_cli() {
     assert_eq!(
         log.lines().collect::<Vec<_>>(),
         vec![
-            "pane report-agent pane-test --source custom:min --agent min --seq 1 --state working",
-            "pane report-agent pane-test --source custom:min --agent min --seq 2 --state idle",
-            "pane report-agent pane-test --source custom:min --agent min --seq 3 --state blocked",
-            "pane release-agent pane-test --source custom:min --agent min",
+            report_line(1, "idle"), // ← start(): registers before any user input
+            report_line(2, "working"),
+            report_line(3, "idle"),
+            report_line(4, "blocked"),
+            RELEASE_LINE.to_string(), // ← Quit (via wait): release
         ],
         "the full argv Herdr must receive, in report order"
     );
