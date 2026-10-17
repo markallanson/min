@@ -154,7 +154,8 @@ The catalogue — pure data, no behaviour:
 | `MessageEnd` | agent → repl | (none) |
 | `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note |
 | `Info` / `Error` | any → repl | human-facing status |
-| `ResetConversation` | repl → agent | (none) |
+| `ResetConversation` | repl → everyone | (none) — context re-reads AGENTS.md on it |
+| `ClearPromptSections` | context → agent | (none) — agent drops its collected sections |
 | `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
 | `Quit` | repl → everyone | (none) — repl calls `hub.quit()` on it |
 

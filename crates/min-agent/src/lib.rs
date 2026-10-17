@@ -18,8 +18,10 @@ const MAX_ROUNDS: usize = 50;
 pub struct AgentPlugin {
     messages: Vec<Value>,
     system: String,
-    /// Extra prompt sections collected from `SystemPromptSection` events
-    /// during `start` (e.g. the project's AGENTS.md, via min-context).
+    /// Extra prompt sections handed over via `SystemPromptSection` events
+    /// (e.g. the project's AGENTS.md, via min-context) and dropped again on
+    /// `ClearPromptSections`: the emitter re-reads the files whenever the
+    /// conversation is cleared, so `/clear` picks up on-disk edits too.
     sections: Vec<(String, String)>,
 }
 
@@ -51,6 +53,8 @@ impl Plugin for AgentPlugin {
     fn handle(&mut self, hub: &Hub, event: &dyn Any) {
         if let Some(e) = event.downcast_ref::<events::SystemPromptSection>() {
             self.sections.push((e.title.clone(), e.body.clone()));
+        } else if event.downcast_ref::<events::ClearPromptSections>().is_some() {
+            self.sections.clear();
         } else if let Some(e) = event.downcast_ref::<events::UserInput>() {
             let text = e.text.clone();
             self.turn(hub, &text);
@@ -65,7 +69,7 @@ impl Plugin for AgentPlugin {
 
 impl AgentPlugin {
     fn turn(&mut self, hub: &Hub, user_text: &str) {
-        // Base prompt plus any sections plugins handed us at startup.
+        // Base prompt plus any sections plugins handed us (refreshed on /clear).
         let mut system = self.system.clone();
         for (title, body) in &self.sections {
             system.push_str(&format!("\n\n# {title}\n\n{body}"));
@@ -242,5 +246,33 @@ mod tests {
             "Project instructions (AGENTS.md)".into(),
             "rule one".into(),
         ));
+    }
+
+    #[test]
+    fn clear_prompt_sections_drops_old_ones_so_reemitted_files_replace_them() {
+        let mut agent = AgentPlugin::new();
+        let hub = Hub::new(vec![]);
+        agent.handle(
+            &hub,
+            &events::SystemPromptSection {
+                title: "Project instructions (AGENTS.md)".into(),
+                body: "old rules".into(),
+            },
+        );
+
+        agent.handle(&hub, &events::ClearPromptSections {});
+        assert!(agent.sections.is_empty());
+
+        agent.handle(
+            &hub,
+            &events::SystemPromptSection {
+                title: "Project instructions (AGENTS.md)".into(),
+                body: "new rules".into(),
+            },
+        );
+        assert_eq!(agent.sections, vec![(
+            "Project instructions (AGENTS.md)".into(),
+            "new rules".into(),
+        )]);
     }
 }

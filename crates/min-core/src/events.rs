@@ -41,16 +41,25 @@ pub struct Error {
     pub text: String,
 }
 
-/// Forget the conversation and start fresh (repl → agent).
+/// Forget the conversation and start fresh (repl → everyone). The agent
+/// clears its history; context takes it as the cue to re-read instruction
+/// files and hand over fresh `SystemPromptSection`s.
 pub struct ResetConversation {}
 
-/// A section to append to the agent's system prompt (context → agent).
-/// Emitted once at startup by context plugins, e.g. min-context handing
-/// the project's AGENTS.md to the agent.
+/// A section to append to the agent's system prompt (context → agent),
+/// e.g. min-context handing over the project's AGENTS.md. Emitted at
+/// startup and again whenever instructions are re-read (`/clear`); every
+/// re-read round is preceded by [`ClearPromptSections`], so nothing stale
+/// survives.
 pub struct SystemPromptSection {
     pub title: String,
     pub body: String,
 }
+
+/// Forget every system-prompt section collected so far (context → agent).
+/// Precedes a fresh round of [`SystemPromptSection`]s when instructions are
+/// re-read, so edited or deleted files leave nothing stale behind.
+pub struct ClearPromptSections {}
 
 /// Shut down the harness (repl → everyone).
 pub struct Quit {}

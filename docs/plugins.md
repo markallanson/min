@@ -114,7 +114,8 @@ plugins never import each other:
 | `MessageEnd` | agent → repl | (none) |
 | `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note |
 | `Info` / `Error` | any → repl | human-facing status |
-| `ResetConversation` | repl → agent | (none) |
+| `ResetConversation` | repl → everyone | (none) — context also re-reads instruction files on it |
+| `ClearPromptSections` | context → agent | (none) — agent drops its collected system-prompt sections |
 | `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
 | `Quit` | repl → everyone | (none) — the repl calls `hub.quit()` on it |
 
