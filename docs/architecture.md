@@ -8,9 +8,10 @@ min is a terminal agentic coding harness in Rust with one architectural law:
 > plugin.
 
 Everything below is this law applied: what the loop is, what plugins may
-say to each other, and what happens on a real turn. Line counts are
-approximate and drift; the *shape* — who owns what, who talks to whom — is
-what matters.
+say to each other, and what happens on a real turn. **For how to write a
+plugin — the hooks, the three shapes, a complete worked example — see
+[plugins.md](plugins.md).** Line counts are approximate and drift; the
+*shape* — who owns what, who talks to whom — is what matters.
 
 ---
 
@@ -47,7 +48,7 @@ no async. It cannot even print. It provides exactly four nouns:
 
 | noun | what it is | who defines behaviour |
 |---|---|---|
-| [`Plugin`](#the-plugin-contract) | the contract every feature implements | the plugin |
+| `Plugin` | the contract every feature implements | the plugin |
 | `Hub::emit` | the event bus — deliver a value to every plugin | the emitter |
 | `Hub::service` | one typed value, published for whoever needs it | the publisher |
 | `Hub::tools` | name → callable registry the agent offers to the model | the registering plugin |
@@ -123,11 +124,16 @@ pub trait Plugin {
 }
 ```
 
-| hook | when | use it to |
-|---|---|---|
-| `start` | once, in load order | register tools, publish services |
-| `wait` | when idle, in load order | **block** on the outside world (stdin, a socket, a timer) and return an event when it has one |
-| `handle` | for every event, in load order | react: print, mutate state, emit more events |
+That is the entire surface a plugin implements — three hooks and a name.
+What each hook is for, when to use which, and a complete working example
+are in [plugins.md](plugins.md). Here we care about what the *core*
+guarantees about them:
+
+- `start` runs once per plugin, in load order, before the loop begins.
+- `wait` is only ever called when the bus is quiet, so blocking in it is
+  safe and expected; the first `Some(event)` ends the idle phase.
+- `handle` sees every event exactly once, in load order — except events
+  emitted while this plugin itself is executing (see below).
 
 `Box<dyn Any>` is deliberate: the core never inspects events, so events can
 be any `'static` type defined anywhere. The shared vocabulary lives in
@@ -178,77 +184,24 @@ emit from `wait`, not from `handle`.**
 
 ## Services and tools
 
-Two more channels, both just maps the core holds:
+Two more channels, both just maps the core holds. The core's role is
+storage and lookup only — behaviour belongs entirely to the plugins.
 
-**Services** — one typed value per type, published by the plugin that owns
-it, looked up by whoever needs it (returns `None` if absent, so consumers
-degrade gracefully):
+- **Services** — one typed value per type. A provider plugin publishes it
+  in `start` (`set_service`); any consumer fetches it by type
+  (`service::<T>()`), getting `None` if the provider isn't loaded — so
+  consumers degrade gracefully instead of breaking.
+- **Tools** — how plugins extend what the *model* can do. A plugin
+  registers implementations in `start`; the agent lists their specs for the
+  model and dispatches calls through the registry. Tools exchange JSON
+  strings, so the registry stays dependency-free. `Err` from a tool becomes
+  a tool error for the model.
 
-```rust
-// min-llm, in start():                            // min-agent, in turn():
-hub.set_service(Llm::from_env());                  let Some(llm) = hub.service::<Llm>() else {
-                                                       … emit Error; return;
-                                                   };
-                                                   llm.complete(…)
-```
-
-**Tools** — how plugins extend what the *model* can do. The core stores and
-dispatches them; schema and behaviour belong entirely to the plugin:
-
-```rust
-// min-tools-clock, in start():
-hub.tools().register(Box::new(ClockTool));
-
-// min-agent, when the model calls a tool:
-let out = hub.tools().run("clock", "{}");   // Err → reported to the model as a tool error
-```
-
-Tools exchange JSON strings, so the registry stays dependency-free.
+Usage examples for both are in [plugins.md](plugins.md).
 
 ---
 
-## Worked example 1: a complete plugin
-
-The whole API surface, from `min-tools-clock` (real code, comments trimmed):
-
-```rust
-use min_core::{Hub, Plugin, Tool};
-
-pub struct ClockPlugin;                       // the plugin: registers the tool
-
-impl Plugin for ClockPlugin {
-    fn name(&self) -> &'static str { "clock" }
-    fn start(&mut self, hub: &Hub) {
-        hub.tools().register(Box::new(ClockTool));
-    }
-}
-
-struct ClockTool;                             // the capability itself
-
-impl Tool for ClockTool {
-    fn name(&self) -> &'static str { "clock" }
-    fn spec(&self) -> &'static str {
-        r#"{"description":"Current UTC time",
-            "input_schema":{"type":"object","properties":{}}}"#
-    }
-    fn run(&self, _input: &str) -> Result<String, String> {
-        Ok(format_utc(secs_since_epoch()))    // Err(_) → tool error for the model
-    }
-}
-```
-
-Four steps to ship a capability:
-
-1. `cargo new crates/min-tools-<x> --lib`, depend on `min-core` only;
-2. write the struct(s) above — or just a `Plugin` with `handle` if it's a
-   listener, or `set_service` if it's a provider;
-3. add `crates/min-tools-<x>` to the workspace `Cargo.toml`;
-4. add one line to `src/main.rs` **in load order** (UI first; things that
-   register tools before the agent).
-
----
-
-## Worked example 2: one turn, end to end
+## Worked example: one turn, end to end
 
 The user types `what time is it?` (the model answers with the clock tool).
 Load order: `repl, llm, fs, shell, clock, agent`.
@@ -316,7 +269,8 @@ all this: the agent caps a turn at 50 LLM↔tool rounds.
    cannot express a feature at all — and prefer adding an event *type*
    over adding behaviour.
 2. **Every capability is a plugin.** Missing something? The default answer
-   is a new crate plus one line in `src/main.rs`.
+   is a new crate plus one line in `src/main.rs`
+   ([how](plugins.md)).
 3. **Plugins never import each other.** Events, services, tools — nothing
    else. Drop any plugin from the build and the rest still runs.
 4. **Synchronous, single-threaded, in-order.** Blocking lives in `wait`.
@@ -333,6 +287,6 @@ crates/min-llm           Anthropic Messages + OpenAI chat clients (streaming)
 crates/min-agent         conversation state + tool loop + system prompt
 crates/min-tools-fs      read / edit / write
 crates/min-tools-shell   bash (timeout, capture, truncation)
-crates/min-tools-clock   the Worked example 1, made real
+crates/min-tools-clock   the plugins.md worked example, made real
 src/main.rs              the only glue: the plugin list
 ```

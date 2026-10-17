@@ -76,20 +76,9 @@ concurrency model; see [docs/architecture.md](docs/architecture.md).
 
 ### Writing a plugin
 
-A crate, a struct, two impls, one line in `src/main.rs`. The full walkthrough
-(with a complete, working example) is in
-[docs/architecture.md](docs/architecture.md); in short:
-
-```rust
-impl Plugin for ClockPlugin {
-    fn name(&self) -> &'static str { "clock" }
-    fn start(&mut self, hub: &Hub) { hub.tools().register(Box::new(ClockTool)); }
-}
-// …and a `struct ClockTool;` implementing `Tool` (name, spec, run).
-```
-
-The whole API surface is `Plugin { name, start, wait, handle }` and
-`Tool { name, spec, run }` — see the architecture doc's worked examples.
+A crate, a struct, two impls, one line in `src/main.rs`. The full guide —
+the three plugin shapes, events, services, tools, and a complete working
+example — is in [docs/plugins.md](docs/plugins.md).
 
 ## Self-hosting
 

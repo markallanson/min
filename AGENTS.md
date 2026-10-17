@@ -5,13 +5,15 @@ plugin to a tiny, dependency-free core.
 
 **Read [docs/architecture.md](docs/architecture.md) first** — it explains the
 architecture (core = only a loop, plugins = every capability) with diagrams
-and worked examples. The rules below follow from it.
+and worked examples. The rules below follow from it. To add a capability,
+follow **[docs/plugins.md](docs/plugins.md)** (the three plugin shapes, a
+complete worked example, the four steps to ship one).
 
 Rules when changing this codebase:
 
 - Keep the core minimal: `min-core` gets no dependencies, no I/O, no async,
   and no functionality of its own — just the loop. New capabilities go in
-  plugins (new crate under `crates/`, one line in `src/main.rs`).
+  plugins ([how](docs/plugins.md)).
 - Plugins never import each other — only `min-core`. Cross-plugin
   communication is events, services, or the tool registry.
 - Keep everything synchronous and single-threaded; blocking lives in
