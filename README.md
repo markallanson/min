@@ -133,6 +133,7 @@ from this repository and ask it to add a plugin.
 - no way to interrupt a running turn except Ctrl-C (which exits min)
 - no token/cost accounting, no retries mid-stream, no diff preview
 - multiline input is one line; no tab completion
+- input history is in-memory only (lost on exit)
 
 ## Layout
 
