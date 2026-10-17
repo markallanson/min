@@ -277,8 +277,14 @@ impl Repl {
         self.write("\r\x1b[K");
         self.prompt();
         self.write(&String::from_utf8_lossy(&self.buf));
-        let col = PROMPT_COLS + self.char_count_before(self.pos);
-        self.write(&format!("\r\x1b[{col}G")); // column (1-based)
+        self.write(&format!("\r\x1b[{}G", self.cursor_col(self.pos)));
+    }
+
+    /// Terminal column (1-based — `CSI G` counts from 1) of the edit cursor
+    /// after `pos` bytes of `buf`: prompt columns plus displayed characters,
+    /// plus one to move *past* the last character.
+    fn cursor_col(&self, pos: usize) -> usize {
+        PROMPT_COLS + self.char_count_before(pos) + 1
     }
 
     /// Displayed characters (not bytes) in `buf[..pos]`.
@@ -441,6 +447,16 @@ mod tests {
         assert_eq!(word_start(b"", 0), 0);
         assert_eq!(word_start(b"abc", 0), 0);
         assert_eq!(word_start(b"a b", 2), 0); // "a " + trailing space deleted
+    }
+
+    #[test]
+    fn cursor_col_is_one_based_and_char_counted() {
+        let mut r = Repl::new();
+        r.buf = b"abc".to_vec();
+        assert_eq!(r.cursor_col(3), 6); // "❯ abc" — one past 'c'
+        r.buf = "hé".to_string().into_bytes(); // é is 2 bytes, 1 char
+        assert_eq!(r.cursor_col(3), 5); // "❯ hé" — one past 'é'
+        assert_eq!(r.cursor_col(0), 3); // "❯ " — one past the prompt
     }
 
     #[test]
