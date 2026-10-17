@@ -11,6 +11,11 @@
 //!
 //! so the rest of min never has to care which wire format is in use.
 //!
+//! Failures are classified: `429` with a balance/resource-package error is
+//! an endpoint/plan mismatch (fail fast, with a hint), while genuine rate
+//! limits and 5xx/network errors are retried with exponential backoff
+//! (1→32s, honouring `Retry-After`), reporting progress via a status callback.
+//!
 //! Environment:
 //! - `MIN_API`            dialect or endpoint alias: `"anthropic"` (default),
 //!                        `"openai"`, `"zai"` (Z.ai coding plan), `"openrouter"`
@@ -102,41 +107,64 @@ impl Llm {
 
     /// Stream one completion. `messages` are Anthropic-style; `tools` are
     /// `[{"name","description","input_schema"}]`; `on_delta` receives text as
-    /// it arrives. Returns the normalized message (see crate docs).
+    /// it arrives; `on_status` receives human-readable retry progress.
+    /// Returns the normalized message (see crate docs).
     pub fn complete(
         &self,
         system: &str,
         messages: &[Value],
         tools: &[Value],
         on_delta: &mut dyn FnMut(&str),
+        on_status: &mut dyn FnMut(&str),
     ) -> Result<Value, String> {
         if self.api_key.is_empty() {
             return Err("no API key set for the LLM (see MIN_API / ANTHROPIC_API_KEY / MIN_API_KEY)".into());
         }
         let body = self.build_body(system, messages, tools);
-        let mut streamed = false;
-        let mut last_err = String::new();
-        for attempt in 0..4u64 {
-            if attempt > 0 {
-                std::thread::sleep(Duration::from_millis(1000 * attempt));
-            }
+        let host = self.base.split("//").nth(1).unwrap_or(self.base.as_str()).to_string();
+        const SCHEDULE: [u64; 6] = [1, 2, 4, 8, 16, 32];
+        let attempts = SCHEDULE.len();
+        for attempt in 1..=attempts + 1 {
+            let mut streamed = false;
             let mut delta = |t: &str| {
                 streamed = true;
                 on_delta(t);
             };
-            match self.try_once(&body, &mut delta) {
+            let fail = match self.try_once(&body, &mut delta) {
                 Ok(v) => return Ok(v),
-                Err(e) => {
-                    last_err = e;
-                    let retryable = ["429", "overloaded", "500", "502", "503", "529", "timeout", "connection"]
-                        .iter().any(|s| last_err.to_lowercase().contains(s));
-                    if streamed || !retryable {
-                        return Err(last_err);
-                    }
+                Err(f) => f,
+            };
+            // A plan-mismatch 429 is not a rate limit — no amount of retrying helps.
+            if let Fail::Http { status: 429, body, .. } = &fail {
+                if is_plan_mismatch(body) {
+                    return Err(format!(
+                        "HTTP 429 from {host}: {}\nhint: {PLAN_HINT}",
+                        body.trim()
+                    ));
                 }
             }
+            // Never retry once text has reached the user — a retry would duplicate it.
+            if streamed || !fail.is_retryable() {
+                return Err(fail.message());
+            }
+            if attempt > attempts {
+                return Err(format!(
+                    "{} — gave up after {attempts} retries (~{}s total)",
+                    fail.message(),
+                    SCHEDULE.iter().sum::<u64>()
+                ));
+            }
+            let wait = match &fail {
+                Fail::Http { retry_after: Some(ra), .. } => *ra,
+                _ => SCHEDULE[attempt - 1],
+            };
+            on_status(&format!(
+                "{} — retrying in {wait}s (attempt {attempt}/{attempts})",
+                fail.brief()
+            ));
+            std::thread::sleep(Duration::from_secs(wait));
         }
-        Err(last_err)
+        unreachable!()
     }
 
     fn build_body(&self, system: &str, messages: &[Value], tools: &[Value]) -> Value {
@@ -165,7 +193,7 @@ impl Llm {
         }
     }
 
-    fn try_once(&self, body: &Value, on_delta: &mut dyn FnMut(&str)) -> Result<Value, String> {
+    fn try_once(&self, body: &Value, on_delta: &mut dyn FnMut(&str)) -> Result<Value, Fail> {
         let url = match self.api {
             "openai" => format!("{}/chat/completions", self.base),
             _ => format!("{}/v1/messages", self.base),
@@ -179,12 +207,15 @@ impl Llm {
         };
         let resp = match req.send_json(body.clone()) {
             Ok(r) => r,
-            Err(ureq::Error::Status(code, r)) => return Err(format!("HTTP {code}: {}", error_body(r))),
-            Err(e) => return Err(e.to_string()),
+            Err(ureq::Error::Status(code, r)) => {
+                let retry_after = r.header("retry-after").and_then(|v| v.parse().ok());
+                return Err(Fail::Http { status: code, body: error_body(r), retry_after });
+            }
+            Err(e) => return Err(Fail::Transport(e.to_string())),
         };
         let mut blocks = Blocks::default();
         for line in BufReader::new(resp.into_reader()).lines() {
-            let line = line.map_err(|e| format!("stream failed: {e}"))?;
+            let line = line.map_err(|e| Fail::Stream(format!("stream failed: {e}")))?;
             let Some(data) = line.strip_prefix("data:") else { continue };
             let data = data.trim();
             if data.is_empty() {
@@ -195,8 +226,8 @@ impl Llm {
             }
             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
             match self.api {
-                "openai" => self.parse_openai_chunk(&v, &mut blocks, on_delta)?,
-                _ => self.parse_anthropic_chunk(&v, &mut blocks, on_delta)?,
+                "openai" => self.parse_openai_chunk(&v, &mut blocks, on_delta).map_err(Fail::Stream)?,
+                _ => self.parse_anthropic_chunk(&v, &mut blocks, on_delta).map_err(Fail::Stream)?,
             }
             if blocks.done {
                 break;
@@ -313,6 +344,50 @@ fn first_env(names: &[&str]) -> String {
         }
     }
     String::new()
+}
+
+const PLAN_HINT: &str = "this endpoint does not see your plan's resource package — \
+     coding-plan keys only work on the coding endpoints (.../api/coding/paas/v4; \
+     MIN_API=zai or open.bigmodel.cn/api/coding/paas/v4), not the general \
+     .../api/paas/v4 endpoint. Check MIN_BASE_URL / MIN_API.";
+
+/// A classified failure from one request attempt.
+enum Fail {
+    Http { status: u16, body: String, retry_after: Option<u64> },
+    Stream(String),
+    Transport(String),
+}
+
+impl Fail {
+    fn message(&self) -> String {
+        match self {
+            Fail::Http { status, body, .. } => format!("HTTP {status}: {}", body.trim()),
+            Fail::Stream(m) | Fail::Transport(m) => m.clone(),
+        }
+    }
+    fn brief(&self) -> String {
+        match self {
+            Fail::Http { status: 429, .. } => "429 rate-limited".into(),
+            Fail::Http { status, .. } => format!("HTTP {status}"),
+            Fail::Transport(_) => "network error".into(),
+            Fail::Stream(_) => "stream error".into(),
+        }
+    }
+    fn is_retryable(&self) -> bool {
+        match self {
+            Fail::Http { status: 429, body, .. } => !is_plan_mismatch(body),
+            Fail::Http { status: 500..=599, .. } => true,
+            Fail::Transport(_) => true,
+            _ => false,
+        }
+    }
+}
+
+/// z.ai/bigmodel return 429 (code 1113) when the endpoint doesn't match the
+/// key's plan — distinct from an actual rate limit.
+fn is_plan_mismatch(body: &str) -> bool {
+    let b = body.to_lowercase();
+    b.contains("insufficient balance") || b.contains("no resource package") || b.contains("\"1113\"")
 }
 
 /// Normalized stream accumulator shared by both dialects.
@@ -439,6 +514,28 @@ mod tests {
         assert_eq!(v["stop_reason"], "end_turn");
         assert_eq!(v["content"][0]["text"], "hi");
         assert_eq!(v["content"][1]["input"]["command"], "ls");
+    }
+
+    #[test]
+    fn plan_mismatch_429_is_not_retryable() {
+        let body = "{\"error\":{\"code\":\"1113\",\"message\":\"Insufficient balance or no resource package. Please recharge.\"}}";
+        assert!(is_plan_mismatch(body));
+        let f = Fail::Http { status: 429, body: body.into(), retry_after: None };
+        assert!(!f.is_retryable());
+        assert!(f.message().starts_with("HTTP 429: {\"error\""));
+        assert_eq!(f.brief(), "429 rate-limited");
+    }
+
+    #[test]
+    fn genuine_429_is_retryable() {
+        let f = Fail::Http { status: 429, body: "Too Many Requests".into(), retry_after: Some(7) };
+        assert!(f.is_retryable());
+        let f = Fail::Http { status: 503, body: "unavailable".into(), retry_after: None };
+        assert!(f.is_retryable());
+        let f = Fail::Http { status: 401, body: "bad key".into(), retry_after: None };
+        assert!(!f.is_retryable());
+        let f = Fail::Stream("mid-stream".into());
+        assert!(!f.is_retryable());
     }
 
     #[test]

@@ -61,6 +61,21 @@ Commands: `/help`, `/clear` (reset conversation), `/quit`. Ctrl-C exits at any
 moment (even mid-generation); Ctrl-D quits at an empty prompt. Piping works,
 for scripting: `echo 'explain this repo' | min`.
 
+### 429s — two very different meanings
+
+The z.ai/bigmodel API answers **429** both for real rate limits *and* for a
+plan/endpoint mismatch, so check the message body:
+
+- `Insufficient balance or no resource package` (code **1113**) — the endpoint
+  doesn't match your key. Coding-plan keys only work on the **coding**
+  endpoints (`MIN_API=zai` → `api.z.ai/api/coding/paas/v4`, or
+  `open.bigmodel.cn/api/coding/paas/v4`), never the general
+  `api.z.ai/api/paas/v4`. min detects this and fails fast with a hint.
+- anything else — a real rate/concurrency limit. Coding plans limit
+  **concurrent** generations per key, allowance notwithstanding (other
+  clients on the same key count too). min retries with exponential backoff
+  (1→32s, honouring `Retry-After`) and shows `retrying in Ns` while waiting.
+
 ## Design rules
 
 1. **The core does nothing but coordinate.** `min-core` has no I/O, no

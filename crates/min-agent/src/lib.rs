@@ -80,7 +80,11 @@ impl AgentPlugin {
             let mut on_delta = |t: &str| {
                 hub.emit(events::AssistantDelta { text: t.to_string() });
             };
-            let message = match llm.complete(&self.system, &self.messages, &tools, &mut on_delta) {
+            let mut on_status = |s: &str| {
+                hub.emit(events::Info { text: s.to_string() });
+            };
+            let message =
+                match llm.complete(&self.system, &self.messages, &tools, &mut on_delta, &mut on_status) {
                 Ok(m) => m,
                 Err(e) => {
                     hub.emit(events::Error { text: e });
