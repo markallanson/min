@@ -17,11 +17,14 @@
 //!   [`events::SessionStart`], in that order, inside the one dispatch.
 //! - On [`events::Quit`] the session is closed.
 //!
-//! Ids are epoch seconds, stepped past the previous id when two sessions
-//! begin within the same second (a `/clear` inside its first second of
-//! life). A plugin that wants to track the current session keeps the last
-//! `id` it saw in its own state; there is deliberately no session service —
-//! the events *are* the interface.
+//! Ids are `<epoch seconds>-<4 random alphanumeric characters>` — the clock
+//! keeps them sorting chronologically, the suffix keeps them unique however
+//! many sessions begin within one second (a `/clear` inside the first
+//! second of a session's life included), so there is nothing to step past.
+//! `--session <id>` still pins a verbatim id, which is what
+//! `--parent-session` points at. A plugin that wants to track the current
+//! session keeps the last `id` it saw in its own state; there is
+//! deliberately no session service — the events *are* the interface.
 
 use min_core::{events, Hub, Plugin};
 use std::any::Any;
@@ -30,53 +33,56 @@ pub struct SessionPlugin {
     /// The open session, announced and not yet ended.
     current: Option<Session>,
     /// Id pinned for the first session (`--session`); used verbatim, once.
-    pinned: Option<u64>,
+    pinned: Option<String>,
     /// Parent for the *next* session minted (`--parent-session`).
-    parent: Option<u64>,
+    parent: Option<String>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Session {
-    id: u64,
-    parent: Option<u64>,
+    id: String,
+    parent: Option<String>,
 }
 
 impl SessionPlugin {
     /// `session_id`: pin the first session to this id (both switches are
     /// `Some` → `None`: the caller could not have meant both).
-    pub fn new(session_id: Option<u64>, parent_id: Option<u64>) -> Self {
+    pub fn new(session_id: Option<String>, parent_id: Option<String>) -> Self {
+        let both = session_id.is_some() && parent_id.is_some();
         SessionPlugin {
             current: None,
-            pinned: session_id,
-            parent: if session_id.is_some() && parent_id.is_some() {
-                None
-            } else {
-                parent_id
-            },
+            pinned: if both { None } else { session_id },
+            parent: if both { None } else { parent_id },
         }
     }
 
-    /// Mint the next id: the current epoch second — or the pinned id, for
-    /// the first session — but never less than one past the id before it,
-    /// so ids are unique even when a session is replaced within its first
-    /// second. Call it *before* closing the current session: the guard
-    /// compares against the session being replaced.
-    fn next_id(&self) -> u64 {
-        match self.current {
-            None => self.pinned.unwrap_or_else(secs_since_epoch),
-            Some(s) => secs_since_epoch().max(s.id + 1),
+    /// Mint the next id: `<epoch seconds>-<4 random characters>` — or the
+    /// pinned id, verbatim, for the first session. The random suffix is the
+    /// whole uniqueness story: sessions minted in the same second cannot
+    /// collide, so ids no longer need stepping. (Mint-before-close is kept
+    /// from the stepped days; the order no longer matters.)
+    fn next_id(&self) -> String {
+        if self.current.is_none() {
+            if let Some(pinned) = &self.pinned {
+                return pinned.clone();
+            }
         }
+        format!("{}-{}", secs_since_epoch(), entropy())
     }
 
     /// Open a session and announce it. Callers arrange for the borrow of
     /// `self` to be released before the event dispatches (return it from
     /// `wait`), so the announcement reaches every plugin — this one
     /// included.
-    fn open(&mut self, id: u64) -> events::SessionStart {
+    fn open(&mut self, id: String) -> events::SessionStart {
         let session = Session { id, parent: self.parent.take() };
-        self.current = Some(session);
         self.pinned = None; // a pin is for the startup session only
-        events::SessionStart { id: session.id, parent: session.parent }
+        let event = events::SessionStart {
+            id: session.id.clone(),
+            parent: session.parent.clone(),
+        };
+        self.current = Some(session);
+        event
     }
 
     /// Close the open session, if there is one.
@@ -131,6 +137,35 @@ fn secs_since_epoch() -> u64 {
         .unwrap_or(0)
 }
 
+/// Four random lowercase alphanumeric characters — 36⁴ ≈ 1.7 million
+/// combinations, far more than the sessions that could ever begin in one
+/// second. `/dev/urandom` is the source; without it (no `/dev`), the
+/// clock's sub-second nanos stand in: the suffix only has to separate
+/// sessions born together, and within one process no two share a nanos.
+fn entropy() -> String {
+    let mut bytes = [0u8; 4];
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut bytes))
+        .is_err()
+    {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        bytes = nanos.to_le_bytes();
+    }
+    entropy_from(bytes)
+}
+
+/// The byte → suffix mapping, factored out so tests can pin it.
+fn entropy_from(bytes: [u8; 4]) -> String {
+    const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    bytes
+        .iter()
+        .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,7 +180,11 @@ mod tests {
         }
         fn handle(&mut self, _hub: &Hub, event: &dyn Any) {
             if let Some(e) = event.downcast_ref::<events::SessionStart>() {
-                self.0.borrow_mut().push(format!("start:{}:{}", e.id, e.parent.unwrap_or(0)));
+                self.0.borrow_mut().push(format!(
+                    "start:{}:{}",
+                    e.id,
+                    e.parent.as_deref().unwrap_or("-")
+                ));
             } else if let Some(e) = event.downcast_ref::<events::SessionEnd>() {
                 self.0.borrow_mut().push(format!("end:{}", e.id));
             }
@@ -167,46 +206,64 @@ mod tests {
         // Core loop, abridged: wait, then dispatch the event to everyone.
         let event = p.wait(&hub).expect("session announces on first wait");
         let e = event.downcast_ref::<events::SessionStart>().unwrap();
-        hub.emit(events::SessionStart { id: e.id, parent: e.parent });
+        hub.emit(events::SessionStart { id: e.id.clone(), parent: e.parent.clone() });
 
-        assert_eq!(*log.borrow(), vec![format!("start:{}:0", secs_since_epoch())]);
+        let logged = log.borrow();
+        assert_eq!(logged.len(), 1, "one announcement");
+        let id = logged[0]
+            .strip_prefix("start:")
+            .and_then(|s| s.strip_suffix(":-"))
+            .expect("start:<id>:- with no parent");
+        assert!(
+            id.starts_with(&format!("{}-", secs_since_epoch())),
+            "id is <epoch second>-<suffix>: {id}"
+        );
         // And afterwards the plugin goes quiet — it does not spin the bus.
         assert!(p.wait(&hub).is_none());
     }
 
     #[test]
     fn pinned_id_is_used_verbatim_for_the_first_session_only() {
-        let mut p = SessionPlugin::new(Some(1_000_000), None);
-        assert_eq!(p.next_id(), 1_000_000);
-        let _ = p.open(1_000_000);
-        // After the first session, ids are minted from the clock again.
-        p.current = Some(Session { id: 1_000_000, parent: None });
-        assert_eq!(p.next_id(), secs_since_epoch().max(1_000_001));
+        let mut p = SessionPlugin::new(Some("1000000-clip".into()), None);
+        assert_eq!(p.next_id(), "1000000-clip");
+        let _ = p.open("1000000-clip".into());
+        // After the first session, ids are minted with a fresh suffix.
+        p.current = Some(Session { id: "1000000-clip".into(), parent: None });
+        assert_eq!(
+            p.next_id()
+                .split_once('-')
+                .map(|(secs, _)| secs.parse::<u64>().is_ok())
+                .unwrap_or(false),
+            true,
+            "later ids are <epoch>-<suffix>, never the pinned one"
+        );
     }
 
     #[test]
     fn both_switches_is_an_error_and_parent_is_dropped() {
-        let p = SessionPlugin::new(Some(42), Some(7));
+        let p = SessionPlugin::new(Some("42-even".into()), Some("7-hole".into()));
         assert_eq!(p.parent, None, "session id and parent together → error; parent cleared");
     }
 
     #[test]
-    fn ids_step_past_the_previous_when_within_the_same_second() {
+    fn ids_carry_entropy_and_never_repeat() {
         let mut p = SessionPlugin::new(None, None);
-        p.current = Some(Session { id: secs_since_epoch(), parent: None });
-        assert_eq!(p.next_id(), secs_since_epoch() + 1);
-        // And once the second has rolled over, the plain epoch second is used.
-        p.current = Some(Session { id: secs_since_epoch() - 10, parent: None });
-        assert_eq!(p.next_id(), secs_since_epoch());
+        p.current = Some(Session { id: "1-aaaa".into(), parent: None });
+        let id = p.next_id();
+        let (secs, suffix) = id.split_once('-').expect("<epoch>-<suffix>");
+        assert!(secs.parse::<u64>().is_ok(), "clock part: {id}");
+        assert_eq!(suffix.len(), 4, "four characters of entropy: {id}");
+        assert!(suffix.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+        assert_ne!(id, "1-aaaa", "the suffix alone separates same-second ids");
     }
 
     #[test]
     fn parent_is_taken_by_the_first_session_only() {
-        let mut p = SessionPlugin::new(None, Some(7));
-        let first = p.open(100);
-        assert_eq!((first.id, first.parent), (100, Some(7)));
-        let second = p.open(200);
-        assert_eq!((second.id, second.parent), (200, None), "parent is one-shot");
+        let mut p = SessionPlugin::new(None, Some("7-dads".into()));
+        let first = p.open("100-late".into());
+        assert_eq!((first.id, first.parent), ("100-late".to_string(), Some("7-dads".to_string())));
+        let second = p.open("200-late".into());
+        assert_eq!(second.parent, None, "parent is one-shot");
     }
 
     #[test]
@@ -216,24 +273,36 @@ mod tests {
         let mut p = SessionPlugin::new(None, None);
         let event = p.wait(&hub).expect("first session announced from wait");
         let e = event.downcast_ref::<events::SessionStart>().unwrap();
-        hub.emit(events::SessionStart { id: e.id, parent: e.parent }); // the core's job
-        let first = p.current.unwrap().id;
+        hub.emit(events::SessionStart { id: e.id.clone(), parent: e.parent.clone() }); // the core's job
+        let first = p.current.clone().unwrap().id;
 
         p.handle(&hub, &events::ResetConversation {});
-        let second = p.current.unwrap().id;
-        assert!(second > first, "fresh id after /clear, even within one second");
+        let second = p.current.clone().unwrap().id;
+        assert!(
+            second != first,
+            "fresh id after /clear, even within one second — the suffix separates them"
+        );
 
         p.handle(&hub, &events::Quit {});
         assert!(p.current.is_none(), "session closed on Quit");
 
-        assert_eq!(
-            *log.borrow(),
-            vec![
-                format!("start:{first}:0"),
-                format!("end:{first}"),
-                format!("start:{second}:0"),
-                format!("end:{second}"),
-            ]
-        );
+        let events = log.borrow();
+        assert_eq!(events.len(), 4, "start/end/start/end");
+        assert_eq!(events[0], format!("start:{first}:-"));
+        assert_eq!(events[1], format!("end:{first}"));
+        assert_eq!(events[2], format!("start:{second}:-"));
+        assert_eq!(events[3], format!("end:{second}"));
+    }
+
+    #[test]
+    fn entropy_suffixes_vary() {
+        // Every byte value through the alphabet: 36 distinct characters,
+        // always four of them, deterministic for a given input.
+        let suffixes: Vec<String> =
+            (0..=255u8).map(|i| entropy_from([i, i, i, i])).collect();
+        let unique: std::collections::HashSet<&String> = suffixes.iter().collect();
+        assert_eq!(unique.len(), 36, "the whole alphabet is reached");
+        assert_eq!(entropy_from([0, 0, 0, 0]), "0000");
+        assert!(suffixes.iter().all(|s| s.len() == 4));
     }
 }

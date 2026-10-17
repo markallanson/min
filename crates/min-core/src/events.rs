@@ -66,19 +66,20 @@ pub struct ClearPromptSections {}
 /// first `wait`, so the broadcast reaches all plugins, itself included —
 /// and a fresh one each time the conversation is cleared
 /// (`ResetConversation`), preceded by [`SessionEnd`] for the session it
-/// replaces. Ids are epoch seconds, stepped past the previous id when two
-/// sessions begin inside one second. A plugin that needs to know which
-/// session it is in keeps the last `id` it saw in its own state; `parent`
-/// links a session to the one that asked for it (`--parent-session`).
+/// replaces. Ids are `<epoch seconds>-<4 random alphanumeric characters>`:
+/// they sort chronologically and cannot collide, however many sessions begin
+/// within one second. A plugin that needs to know which session it is in
+/// keeps the last `id` it saw in its own state; `parent` links a session to
+/// the one that asked for it (`--parent-session`).
 pub struct SessionStart {
-    pub id: u64,
-    pub parent: Option<u64>,
+    pub id: String,
+    pub parent: Option<String>,
 }
 
 /// A session closed (session → everyone). Emitted immediately before the
 /// [`SessionStart`] of its replacement when the conversation is cleared.
 pub struct SessionEnd {
-    pub id: u64,
+    pub id: String,
 }
 
 /// Shut down the harness (repl → everyone).

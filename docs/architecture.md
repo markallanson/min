@@ -294,11 +294,13 @@ crates/min-repl          terminal UI (raw mode, ANSI, input history)
 crates/min-llm           Anthropic Messages + OpenAI chat clients (streaming)
 crates/min-agent         conversation state + tool loop + system prompt
 crates/min-context       AGENTS.md (~/.config/min first, then whole tree, root-first) → system prompt
-crates/min-session       session identity: epoch-second id (+ optional parent), announced
-                         to every plugin on boot (from first `wait`) and on each `/clear`
-crates/min-session-log   session activity → one append-only `<id>.log` per session in
-                         `$XDG_STATE_HOME/min/sessions` (default `~/.local/state/...`):
-                         header, prompts, assistant messages, tool calls, errors
+crates/min-session       session identity: unique `<epoch>-<rand>` id (+ optional parent),
+                         announced to every plugin on boot (from first `wait`) and on
+                         each `/clear`; the entropy suffix keeps same-second sessions apart
+crates/min-session-log   session activity → one append-only `<id>.log` per session, in a
+                         per-project directory under `$XDG_STATE_HOME/min/sessions` (default
+                         `~/.local/state/...`): header, prompts, assistant messages, tool calls,
+                         errors
 crates/min-tools-fs      read / edit / write
 crates/min-tools-shell   bash (timeout, capture, truncation)
 crates/min-tools-clock   the plugins.md worked example, made real

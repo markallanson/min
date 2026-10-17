@@ -8,16 +8,13 @@ use min_core::Plugin;
 
 /// `--session <id>` — pin the first session's id (`--parent-session` alone
 /// makes it the child of the given session). Both together are an error.
-fn parse_args() -> Result<(Option<u64>, Option<u64>), String> {
+fn parse_args() -> Result<(Option<String>, Option<String>), String> {
     let mut session = None;
     let mut parent = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        let mut value = |flag: &str| -> Result<u64, String> {
-            args.next()
-                .ok_or_else(|| format!("{flag} needs a value"))?
-                .parse::<u64>()
-                .map_err(|_| format!("{flag} needs a number"))
+        let mut value = |flag: &str| -> Result<String, String> {
+            args.next().ok_or_else(|| format!("{flag} needs a value"))
         };
         match arg.as_str() {
             "--session" => session = Some(value("--session")?),

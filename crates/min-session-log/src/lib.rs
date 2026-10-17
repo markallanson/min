@@ -1,10 +1,14 @@
 //! min-session-log — an append-only log of session activity.
 //!
-//! One file per session, named `<session id>.log`, under the XDG state
-//! directory — `$XDG_STATE_HOME/min/sessions`, default
-//! `~/.local/state/min/sessions`. Created the moment a session is announced
-//! ([`events::SessionStart`]); appended to as the session unfolds; never
-//! rewritten — a later release can resume a session by reading it back.
+//! One file per session, named `<session id>.log`, under the project's
+//! directory in the XDG state tree —
+//! `$XDG_STATE_HOME/min/sessions/<project>/<id>.log`, default
+//! `~/.local/state/min/sessions/<project>/...` — where `<project>` is the
+//! slug of the basename of the session's working directory (`min`,
+//! `min-k3f9` for a second `…/herb/min`, `root` when there is no basename).
+//! Created the moment a session is announced ([`events::SessionStart`]);
+//! appended to as the session unfolds; never rewritten — a later release
+//! can resume a session by reading it back.
 //!
 //! ## Why a listener
 //!
@@ -52,6 +56,9 @@ pub struct SessionLogPlugin {
     /// this at a scratch directory so they never touch the environment
     /// (which is process-global, and this crate's tests run in parallel).
     dir: Option<std::path::PathBuf>,
+    /// The project directory to log under, instead of the slug of the
+    /// current directory's basename. The other half of the test seam.
+    project: Option<String>,
 }
 
 impl SessionLogPlugin {
@@ -60,24 +67,31 @@ impl SessionLogPlugin {
             file: None,
             assistant: String::new(),
             dir: None,
+            project: None,
         }
     }
 
-    /// Begin logging a session: open the file and announce the header.
-    /// Any earlier failure is forgiven — every new session gets a fresh
-    /// attempt at the state directory.
-    fn start_session(&mut self, hub: &Hub, id: u64, parent: Option<u64>) {
+    /// Begin logging a session: create the project directory, open the
+    /// file, write the header. Any earlier failure is forgiven — every new
+    /// session gets a fresh attempt at the state directory.
+    fn start_session(&mut self, hub: &Hub, id: &str, parent: Option<&str>) {
+        // One current_dir() feeds both the directory name and the header's
+        // cwd=, so the two can never disagree.
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "?".into());
+        let project = self.project.clone().unwrap_or_else(|| slug_project(&cwd));
         let result = self
             .dir
             .clone()
             .or_else(state_dir)
             .ok_or_else(|| "no state directory (set XDG_STATE_HOME or HOME)".to_string())
             .and_then(|dir| {
+                let dir = dir.join(&project);
                 let path = dir.join(format!("{id}.log"));
-                let parent_dir = path.parent().expect("log path has a parent").to_path_buf();
-                std::fs::create_dir_all(&parent_dir)
+                std::fs::create_dir_all(&dir)
                     .map(|_| path)
-                    .map_err(|e| format!("create {}: {e}", parent_dir.display()))
+                    .map_err(|e| format!("create {}: {e}", dir.display()))
             });
         let path = match result {
             Ok(p) => p,
@@ -94,7 +108,7 @@ impl SessionLogPlugin {
                 let _ = writeln!(
                     self.file.as_mut().expect("just set"),
                     "{}",
-                    header(id, parent)
+                    header(id, parent, &cwd)
                 );
             }
             Err(e) => {
@@ -131,7 +145,7 @@ impl Plugin for SessionLogPlugin {
             // A new session begins. Whether or not this plugin ever saw the
             // matching end — min killed hard, say — the new id means a new
             // file; nothing of the old session can be clobbered.
-            self.start_session(hub, e.id, e.parent);
+            self.start_session(hub, &e.id, e.parent.as_deref());
         } else if let Some(e) = event.downcast_ref::<events::UserInput>() {
             self.write_line(&format!("prompt: {}", json_escape(&e.text)));
         } else if let Some(e) = event.downcast_ref::<events::AssistantDelta>() {
@@ -171,7 +185,35 @@ impl Plugin for SessionLogPlugin {
     }
 }
 
-/// The directory this plugin logs into: `$XDG_STATE_HOME/min/sessions`,
+/// The project directory a session logs under: the slug of the basename of
+/// its working directory — lowercased, every character outside
+/// `[a-z0-9._-]` collapsed to `-`, capped at 32, `-` trimmed — so
+/// `/home/me/herb/min` and `/srv/work/min` both log under `min` (the state
+/// header's `cwd=` tells them apart). A path with no basename (`/`) slugs
+/// to `root`.
+fn slug_project(cwd: &str) -> String {
+    let name = std::path::Path::new(cwd)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "root".into());
+    let mut slug: String = name
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'a'..='z' | '0'..='9' | '.' | '_' | '-' => c,
+            _ => '-',
+        })
+        .collect();
+    slug.truncate(32);
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "root".into()
+    } else {
+        slug.into()
+    }
+}
+
+/// The base directory this plugin logs into: `$XDG_STATE_HOME/min/sessions`,
 /// or `~/.local/state/min/sessions` when `XDG_STATE_HOME` is unset or
 /// empty (the XDG rule), or nothing at all when there is no home.
 fn state_dir() -> Option<std::path::PathBuf> {
@@ -190,18 +232,15 @@ fn json_escape(s: &str) -> String {
 
 /// The first line of a session's log: everything a future resume needs to
 /// rebuild the stage.
-fn header(id: u64, parent: Option<u64>) -> String {
+fn header(id: &str, parent: Option<&str>, cwd: &str) -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "?".into());
     format!(
         "session_start: id={id} parent={} started={secs} cwd={}",
-        parent.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
-        json_escape(&cwd)
+        parent.unwrap_or("-"),
+        json_escape(cwd)
     )
 }
 
@@ -225,31 +264,38 @@ mod tests {
         dir
     }
 
-    /// A plugin logging into a scratch directory, via the test seam.
+    /// A plugin logging into a scratch directory, via the test seam. The
+    /// project directory is pinned too, so tests never depend on the name
+    /// of the directory the test runner happens to sit in.
     fn plugin(name: &str) -> (SessionLogPlugin, std::path::PathBuf) {
         let dir = scratch(name);
         let mut p = SessionLogPlugin::new();
         p.dir = Some(dir.clone());
+        p.project = Some("proj".into());
         (p, dir)
     }
 
-    fn log_of(dir: &std::path::Path, id: u64) -> String {
-        std::fs::read_to_string(dir.join(format!("{id}.log")))
+    fn log_of(dir: &std::path::Path, id: &str) -> String {
+        std::fs::read_to_string(dir.join("proj").join(format!("{id}.log")))
             .unwrap_or_else(|e| panic!("read log: {e}"))
     }
 
     #[test]
-    fn one_file_per_session_in_the_configured_directory() {
+    fn one_file_per_session_in_the_projects_directory() {
         let (mut p, dir) = plugin("dir");
         let hub = Hub::new(vec![]);
         p.handle(
             &hub,
             &events::SessionStart {
-                id: 123,
-                parent: Some(7),
+                id: "123-quad".into(),
+                parent: Some("7-trio".into()),
             },
         );
-        assert!(dir.join("123.log").is_file());
+        assert!(dir.join("proj").join("123-quad.log").is_file());
+        assert!(
+            !dir.join("123-quad.log").exists(),
+            "the log is inside the project directory, not beside it"
+        );
     }
 
     #[test]
@@ -259,16 +305,16 @@ mod tests {
         p.handle(
             &hub,
             &events::SessionStart {
-                id: 42,
-                parent: Some(41),
+                id: "42-pin".into(),
+                parent: Some("41-hold".into()),
             },
         );
 
-        let line = log_of(&dir, 42);
+        let line = log_of(&dir, "42-pin");
         let line = line.trim_end();
         let cwd = json_escape(&std::env::current_dir().unwrap().display().to_string());
         assert!(
-            line.starts_with("session_start: id=42 parent=41 started=")
+            line.starts_with("session_start: id=42-pin parent=41-hold started=")
                 && line.ends_with(&format!("cwd={cwd}")),
             "unexpected header: {line}"
         );
@@ -282,7 +328,7 @@ mod tests {
         p.handle(
             &hub,
             &events::SessionStart {
-                id: 5,
+                id: "5-five".into(),
                 parent: None,
             },
         );
@@ -326,16 +372,16 @@ mod tests {
                 text: "boom".into(),
             },
         );
-        p.handle(&hub, &events::SessionEnd { id: 5 });
+        p.handle(&hub, &events::SessionEnd { id: "5-five".into() });
 
         // The two timestamps and the (escaped) cwd vary; everything between
         // is exact. Header → entries → footer, in the documented order.
-        let log = log_of(&dir, 5);
+        let log = log_of(&dir, "5-five");
         let mut lines = log.lines();
         let header = lines.next().expect("header line");
         let (head, rest) = header.split_once("started=").expect("started=");
         let (started, cwd_part) = rest.split_once(' ').expect("cwd after started");
-        assert_eq!(head, "session_start: id=5 parent=- ");
+        assert_eq!(head, "session_start: id=5-five parent=- ");
         assert!(
             started.parse::<u64>().is_ok(),
             "started={started} is a timestamp"
@@ -365,23 +411,23 @@ mod tests {
         p.handle(
             &hub,
             &events::SessionStart {
-                id: 9,
+                id: "9-nine".into(),
                 parent: None,
             },
         );
         p.handle(&hub, &events::AssistantDelta { text: "hel".into() });
         p.handle(&hub, &events::AssistantDelta { text: "lo ".into() });
         assert_eq!(
-            log_of(&dir, 9).lines().count(),
+            log_of(&dir, "9-nine").lines().count(),
             1,
             "nothing logged mid-stream"
         );
 
         p.handle(&hub, &events::MessageEnd {});
         assert!(
-            log_of(&dir, 9).contains("\nassistant: \"hello \"\n"),
+            log_of(&dir, "9-nine").contains("\nassistant: \"hello \"\n"),
             "message logged on end: {:?}",
-            log_of(&dir, 9)
+            log_of(&dir, "9-nine")
         );
     }
 
@@ -392,7 +438,7 @@ mod tests {
         p.handle(
             &hub,
             &events::SessionStart {
-                id: 100,
+                id: "100-hunn".into(),
                 parent: None,
             },
         );
@@ -402,17 +448,17 @@ mod tests {
                 text: "first".into(),
             },
         );
-        p.handle(&hub, &events::SessionEnd { id: 100 });
+        p.handle(&hub, &events::SessionEnd { id: "100-hunn".into() });
 
         p.handle(
             &hub,
             &events::SessionStart {
-                id: 101,
+                id: "101-hunn".into(),
                 parent: None,
             },
         );
         assert_eq!(
-            log_of(&dir, 101).lines().count(),
+            log_of(&dir, "101-hunn").lines().count(),
             1,
             "the new file starts with the header only"
         );
@@ -422,11 +468,11 @@ mod tests {
         p.handle(
             &hub,
             &events::SessionStart {
-                id: 102,
+                id: "102-hunn".into(),
                 parent: None,
             },
         );
-        assert!(dir.join("102.log").is_file());
+        assert!(dir.join("proj").join("102-hunn.log").is_file());
     }
 
     #[test]
@@ -436,14 +482,14 @@ mod tests {
         p.handle(
             &hub,
             &events::SessionStart {
-                id: 200,
+                id: "200-ches".into(),
                 parent: None,
             },
         );
         p.handle(
             &hub,
             &events::SessionStart {
-                id: 201,
+                id: "201-fres".into(),
                 parent: None,
             },
         );
@@ -453,9 +499,9 @@ mod tests {
                 text: "written to 201 only".into(),
             },
         );
-        p.handle(&hub, &events::SessionEnd { id: 201 });
-        assert!(log_of(&dir, 201).contains("written to 201 only"));
-        assert_eq!(log_of(&dir, 200).lines().count(), 1);
+        p.handle(&hub, &events::SessionEnd { id: "201-fres".into() });
+        assert!(log_of(&dir, "201-fres").contains("written to 201 only"));
+        assert_eq!(log_of(&dir, "200-ches").lines().count(), 1);
     }
 
     /// `state_dir()` — the real resolver, unmocked: XDG_STATE_HOME wins;
@@ -485,16 +531,22 @@ mod tests {
     }
 
     #[test]
+    fn slugs_map_basenames_to_directory_names() {
+        assert_eq!(slug_project("/home/me/herb/min"), "min");
+        assert_eq!(slug_project("/srv/My Project.v2"), "my-project.v2");
+        assert_eq!(slug_project("/srv/my_project"), "my_project");
+        assert_eq!(slug_project("/tmp/ünïcode"), "n-code", "non-ascii collapses, capped at 32");
+        assert_eq!(slug_project("/"), "root", "no basename → root");
+        assert_eq!(slug_project("/srv/---"), "root", "all-dashes → root");
+        let long = slug_project("/x/this-directory-name-is-way-way-longer-than-thirty-two");
+        assert_eq!(long.len(), 32);
+        assert!(!long.starts_with('-'));
+    }
+
+    #[test]
     fn json_escape_quotes_and_holds_one_line() {
         assert_eq!(json_escape("plain"), "\"plain\"");
         assert_eq!(json_escape("a\nb\"c"), "\"a\\nb\\\"c\"");
         assert!(!json_escape("a\nb").contains('\n'));
-    }
-
-    fn now_secs() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
     }
 }
