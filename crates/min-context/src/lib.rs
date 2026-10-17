@@ -1,11 +1,13 @@
 //! min-context — project context for the system prompt.
 //!
-//! Searches the directory tree under the current directory for project
-//! instruction files (currently `AGENTS.md`) at startup and emits them as
-//! [`events::SystemPromptSection`] events for the agent to append to its
-//! base system prompt — root-most file first, so a subdirectory's file
-//! arrives after (and can refine) its ancestors'. No files, no sections,
-//! nothing happens — the agent is unaffected.
+//! First checks for a systemwide instruction file at
+//! `~/.config/min/AGENTS.md` and, if present, emits it as a
+//! [`events::SystemPromptSection`]. Then searches the directory tree under
+//! the current directory for project instruction files (currently
+//! `AGENTS.md`) and emits those the same way — root-most file first, so a
+//! subdirectory's file arrives after (and can refine) its ancestors'. The
+//! systemwide file is always the first context emitted by this plugin.
+//! No files, no sections, nothing happens — the agent is unaffected.
 
 use min_core::{events, Hub, Plugin};
 
@@ -16,6 +18,9 @@ const FILES: &[&str] = &["AGENTS.md"];
 /// dependency trees and build output.
 const SKIP_DIRS: &[&str] = &["node_modules", "target"];
 
+/// Systemwide instruction file, relative to the user's home directory.
+const SYSTEM_FILE: &str = ".config/min/AGENTS.md";
+
 pub struct ContextPlugin;
 
 impl Plugin for ContextPlugin {
@@ -24,13 +29,21 @@ impl Plugin for ContextPlugin {
     }
 
     fn start(&mut self, hub: &Hub) {
-        for (path, body) in collect(".") {
+        for (path, body) in system_file().into_iter().chain(collect(".")) {
             hub.emit(events::SystemPromptSection {
                 title: format!("Project instructions ({path})"),
                 body,
             });
         }
     }
+}
+
+/// The systemwide instruction file's (display path, contents), if it exists.
+fn system_file() -> Option<(String, String)> {
+    let home = std::env::home_dir()?;
+    let path = home.join(SYSTEM_FILE);
+    let body = std::fs::read_to_string(path).ok()?;
+    Some((format!("~/{SYSTEM_FILE}"), body))
 }
 
 /// Every file named in [`FILES`] anywhere under `dir`, as (display path,
@@ -125,6 +138,37 @@ mod tests {
     fn empty_tree_yields_nothing() {
         let root = scratch("empty");
         assert!(collect(root.to_str().unwrap()).is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn system_file_precedes_tree_when_home_points_at_scratch() {
+        let root = scratch("system");
+        fs::create_dir_all(root.join(".config/min")).unwrap();
+        fs::write(root.join(".config/min/AGENTS.md"), "systemwide rules").unwrap();
+        fs::write(root.join("AGENTS.md"), "project rules").unwrap();
+
+        // HOME (tracked by home_dir on unix) aimed at the scratch dir; the
+        // tree search covers the same dir but skips hidden entries, so the
+        // systemwide file is found exactly once, first.
+        let prev_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &root);
+        let found = system_file()
+            .into_iter()
+            .chain(collect(root.to_str().unwrap()))
+            .collect::<Vec<_>>();
+        match prev_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert_eq!(
+            found,
+            vec![
+                ("~/.config/min/AGENTS.md".into(), "systemwide rules".into()),
+                ("AGENTS.md".into(), "project rules".into()),
+            ]
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }
