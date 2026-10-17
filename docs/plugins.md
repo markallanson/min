@@ -5,6 +5,15 @@ loop itself. This guide is for writing a new one. For how the core works —
 the run loop, event delivery, the reasoning behind the rules — see
 [architecture.md](architecture.md).
 
+**Every plugin must ship with its own architecture document** —
+`docs/plugins/<name>.md`, one per crate, explaining how it works with a
+diagram, a worked example, and the events it listens to and emits. This is
+not optional polish: the plugin docs are how the next plugin (human or
+min) finds the service, event or precedent it needs without reading every
+crate. [Plugin documentation](#plugin-documentation-required) below has
+the template; the [index of existing docs](#the-plugins) is at the bottom.
+Everything else on this page is the mechanics the docs describe.
+
 The whole API surface is two traits and one line of glue:
 
 ```rust
@@ -27,6 +36,66 @@ line in `src/main.rs`. That's it — no manifest, no registration file, no
 lifecycle beyond the three hooks.
 
 ---
+
+## The plugins
+
+One architecture document per plugin, in `docs/plugins/`. **Read the one
+closest to what you're building before writing a new plugin** — and write
+the matching one for yours. Every doc follows the same template (see
+[Plugin documentation](#plugin-documentation-required)): at-a-glance,
+state, diagrams, events listened to and emitted, a worked example, and what
+the tests pin.
+
+| plugin | document | shape | one line |
+|---|---|---|---|
+| repl | [repl.md](plugins/repl.md) | source | terminal UI: raw-mode editor, streaming output, owns `Quit` |
+| session | [session.md](plugins/session.md) | source + listener | session identity: unique `<epoch>-<rand>` id (+ optional parent), announced to all |
+| session-log | [session-log.md](plugins/session-log.md) | listener | session activity → one append-only log per session (XDG state dir) |
+| llm | [llm.md](plugins/llm.md) | provider | streaming LLM service (anthropic + openai wire), retries, z.ai mirror |
+| fs | [tools-fs.md](plugins/tools-fs.md) | capability | `read` / `edit` / `write` — exact-match, atomic edits |
+| shell | [tools-shell.md](plugins/tools-shell.md) | capability | `bash` with timeout, deadlock-free capture, output truncation |
+| clock | [tools-clock.md](plugins/tools-clock.md) | capability | current UTC time — the worked example, made real |
+| context | [context.md](plugins/context.md) | source + listener | `~/.config/min/AGENTS.md` + project files → system-prompt sections |
+| herdr | [herdr.md](plugins/herdr.md) | listener | agent state → Herdr (no-op outside a Herdr pane) |
+| agent | [agent.md](plugins/agent.md) | listener/worker | the agent loop: LLM ↔ tools until done |
+
+Load order is exactly this table's order (bottom of `src/main.rs` is the
+authority); the docs cross-link where it matters.
+
+---
+
+## Plugin documentation (required)
+
+Every plugin crate ships with `docs/plugins/<name>.md` — the file that
+explains how it works to the next person (or the next instance of min)
+without making them read the crate. A new plugin is not done until the doc
+exists; a changed plugin's doc is changed in the same commit. No new page
+styles: the ten existing docs are the canon — copy the structure.
+
+Required contents, in order (skip a section only when genuinely empty —
+say so in one line rather than dropping the heading):
+
+1. **One-paragraph summary** — what it does, in terms of the bus: what
+   comes in, what goes out.
+2. **At a glance** — a two-column table: crate and plugin `name()`, which
+   of the [three shapes](#the-three-shapes-a-plugin-takes) it takes, tools
+   offered, services published/consumed, dependencies.
+3. **A diagram** — ASCII, in a fenced code block. The shape of the thing:
+   its state machine, its data flow, or the lifecycle of what it owns.
+   Every doc has at least one; the event-driven ones have an event-flow
+   diagram too.
+4. **Events** — two tables, explicit and exhaustive: **Listens** (event →
+   reaction) and **Emits** (event → when). "Nothing" is a valid answer for
+   either, but say it — the tables are how plugins find each other.
+5. **A worked example** — one concrete run, start to finish, with the
+   actual inputs and outputs (the clock doc's transcript is the model).
+6. **What the tests pin** — the behaviours the crate's tests guarantee, so
+   a reader knows what is contract and what is accident.
+7. **See also** — links to the plugin docs it talks to (or wishes it could)
+   and back to [plugins.md](plugins.md).
+
+Keep it truthful to the code, not aspirational: line counts drift, event
+tables rot — when you change a plugin, change its doc in the same commit.
 
 ## The three shapes a plugin takes
 
@@ -223,7 +292,7 @@ impl Tool for ClockTool {
 }
 ```
 
-## Shipping it: four steps
+## Shipping it: five steps
 
 1. `cargo new crates/min-tools-<x> --lib`; depend on `min-core` only
    (plus whatever your capability needs — but never another plugin).
@@ -231,6 +300,9 @@ impl Tool for ClockTool {
 3. Add the crate to the workspace `Cargo.toml`.
 4. Add one line to `src/main.rs`, **in load order** (UI first; things that
    register tools before the agent).
+5. Write `docs/plugins/<name>.md` — the required architecture document
+   ([template above](#plugin-documentation-required)) — and add it to the
+   [plugin index](#the-plugins).
 
 Then `cargo build && cargo test --workspace` — and if you're adding the
 capability to min itself, ask min to do it; it can edit its own source.
@@ -248,3 +320,5 @@ capability to min itself, ask min to do it; it can edit its own source.
   core change is a new event *type* in `events.rs`.
 - **Degrade gracefully.** `service::<T>()` can return `None`; your plugin
   should still be loadable when its provider is missing.
+- **Document the plugin.** `docs/plugins/<name>.md`, per the required
+  template, added to the index — in the same change as the code.

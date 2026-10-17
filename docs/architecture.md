@@ -288,23 +288,28 @@ all this: the agent caps a turn at 50 LLM↔tool rounds.
 
 ## Where things live
 
+Every plugin has its own architecture document in [docs/plugins/](plugins/) —
+required, one per crate, per [plugins.md](plugins.md#plugin-documentation-required):
+
 ```
 crates/min-core          the loop: Plugin, Hub, events, Tool, ToolRegistry
-crates/min-repl          terminal UI (raw mode, ANSI, input history)
-crates/min-llm           Anthropic Messages + OpenAI chat clients (streaming)
-crates/min-agent         conversation state + tool loop + system prompt
+crates/min-repl          terminal UI (raw mode, ANSI, input history)      → plugins/repl.md
+crates/min-llm           Anthropic Messages + OpenAI chat clients (streaming) → plugins/llm.md
+crates/min-agent         conversation state + tool loop + system prompt       → plugins/agent.md
 crates/min-context       AGENTS.md (~/.config/min first, then whole tree, root-first) → system prompt
+                                                                             → plugins/context.md
 crates/min-session       session identity: unique `<epoch>-<rand>` id (+ optional parent),
                          announced to every plugin on boot (from first `wait`) and on
                          each `/clear`; the entropy suffix keeps same-second sessions apart
+                                                                             → plugins/session.md
 crates/min-session-log   session activity → one append-only `<id>.log` per session, in a
                          per-project directory under `$XDG_STATE_HOME/min/sessions` (default
                          `~/.local/state/...`): header, prompts, assistant messages, tool calls,
-                         errors
-crates/min-tools-fs      read / edit / write
-crates/min-tools-shell   bash (timeout, capture, truncation)
-crates/min-tools-clock   the plugins.md worked example, made real
+                         errors                                              → plugins/session-log.md
+crates/min-tools-fs      read / edit / write                                 → plugins/tools-fs.md
+crates/min-tools-shell   bash (timeout, capture, truncation)                 → plugins/tools-shell.md
+crates/min-tools-clock   the plugins.md worked example, made real            → plugins/tools-clock.md
 crates/min-herdr         reports idle/working/blocked to Herdr via its CLI
-                         (active only when HERDR_ENV=1; releases on Quit)
+                         (active only when HERDR_ENV=1; releases on Quit)    → plugins/herdr.md
 src/main.rs              the only glue: the plugin list
 ```

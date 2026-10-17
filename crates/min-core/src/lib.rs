@@ -236,6 +236,46 @@ mod tests {
         }
     }
 
+    /// Events emitted during a plugin's `start` reach every other plugin —
+    /// *including plugins whose `start` has not run yet* (only the executing
+    /// plugin is busy, so only it misses the event). This is what carries
+    /// min-context's `SystemPromptSection`s to the agent at boot: context
+    /// starts just before the agent. It is also why a plugin that needs
+    /// everyone *fully started* first — min-session's announcement — emits
+    /// from `wait` instead.
+    #[test]
+    fn emissions_from_start_reach_plugins_not_yet_started() {
+        struct Early;
+        impl Plugin for Early {
+            fn name(&self) -> &'static str {
+                "early"
+            }
+            fn start(&mut self, hub: &Hub) {
+                hub.emit(events::UserInput { text: "during start".into() });
+            }
+        }
+        let log = Rc::new(RefCell::new(Vec::new()));
+        struct Late(Rc<RefCell<Vec<String>>>);
+        impl Plugin for Late {
+            fn name(&self) -> &'static str {
+                "late"
+            }
+            fn start(&mut self, hub: &Hub) {
+                hub.quit(); // the run-loop phase is done once every plugin has started
+            }
+            fn handle(&mut self, _hub: &Hub, event: &dyn Any) {
+                if let Some(e) = event.downcast_ref::<events::UserInput>() {
+                    self.0.borrow_mut().push(e.text.clone());
+                }
+            }
+        }
+        run(vec![
+            Box::new(Early),
+            Box::new(Late(log.clone())), // loads after Early; start not yet run
+        ]);
+        assert_eq!(*log.borrow(), vec!["during start".to_string()]);
+    }
+
     #[test]
     fn tools_register_and_run() {
         let hub = Hub::new(vec![]);

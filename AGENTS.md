@@ -19,5 +19,9 @@ Rules when changing this codebase:
 - Keep everything synchronous and single-threaded; blocking lives in
   `Plugin::wait`.
 - Edit precisely: the `edit` tool replaces exact, unique text. Read first.
+- Every plugin ships its own architecture doc — `docs/plugins/<name>.md`
+  (diagram, events listened to/emitted, worked example) — added to the
+  index in `docs/plugins.md`, in the same change as the code. See
+  **docs/plugins.md → “Plugin documentation (required)”**.
 - Verify with `cargo build` and `cargo test --workspace` after Rust changes.
 - Conventional commits (`feat:`, `fix:`, `docs:` …).
