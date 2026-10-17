@@ -228,6 +228,7 @@ dependencies = [
  "min-agent",
  "min-context",
  "min-core",
+ "min-herdr",
  "min-llm",
  "min-repl",
  "min-tools-clock",
@@ -254,6 +255,13 @@ dependencies = [
 [[package]]
 name = "min-core"
 version = "0.1.0"
+
+[[package]]
+name = "min-herdr"
+version = "0.1.0"
+dependencies = [
+ "min-core",
+]
 
 [[package]]
 name = "min-llm"

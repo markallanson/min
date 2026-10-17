@@ -98,6 +98,7 @@ from this repository and ask it to add a plugin.
 
 See [docs/architecture.md](docs/architecture.md) for a guided tour of every
 crate. In brief: `crates/min-core` is the loop; `min-repl`, `min-llm`,
-`min-agent`, `min-context` and `min-tools-*` are the plugins (UI, LLM client,
-agent loop, project instructions, filesystem/shell/clock tools);
-`src/main.rs` is the only glue — the plugin list.
+`min-agent`, `min-context`, `min-herdr` and `min-tools-*` are the plugins
+(UI, LLM client, agent loop, project instructions, Herdr reporting,
+filesystem/shell/clock tools); `src/main.rs` is the only glue — the plugin
+list.

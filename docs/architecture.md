@@ -30,6 +30,7 @@ plugin — the hooks, the three shapes, a complete worked example — see
     │   min-tools-shell   bash with timeout + output capture
     │   min-tools-clock   current UTC time
     │   min-context       ~/.config/min/AGENTS.md + project files → system prompt
+    │   min-herdr         agent state → Herdr (no-op outside a Herdr pane)
     │   min-agent         the agent loop: LLM ↔ tools until done
     ▼
  ┌──────────────── min-core — the loop (zero deps) ───────────────┐
@@ -292,5 +293,7 @@ crates/min-context       AGENTS.md (~/.config/min first, then whole tree, root-f
 crates/min-tools-fs      read / edit / write
 crates/min-tools-shell   bash (timeout, capture, truncation)
 crates/min-tools-clock   the plugins.md worked example, made real
+crates/min-herdr         reports idle/working/blocked to Herdr via its CLI
+                         (active only when HERDR_ENV=1; releases on Quit)
 src/main.rs              the only glue: the plugin list
 ```
