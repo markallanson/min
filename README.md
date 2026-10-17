@@ -3,25 +3,11 @@
 A terminal agentic coding harness in Rust with a deliberately tiny core.
 **Every feature — UI, LLM client, tools, the agent loop itself — is a plugin.**
 The core is only a loop: it loads plugins and pumps events between them, with
-zero functionality of its own. It is ~340 lines with **zero dependencies**.
+zero functionality of its own. It has **zero dependencies**.
 
-```
-┌─────────────────────────── min binary (21 lines) ───────────────────────────┐
-│  load plugins, call min_core::run()                                          │
-└──────────────────────────────────────────────────────────────────────────────┘
-   │                                                                           │
-   │  plugins (never import each other — only min-core)                        │
-   │                                                                           │
-   │   min-repl   301 lines   terminal UI: raw-mode line editor, streaming     │
-   │   min-llm    432 lines   streaming LLM client (anthropic + openai wire)   │
-   │   min-agent  204 lines   the agent loop: LLM ↔ tools until done           │
-   │   min-tools-fs     181   read / edit / write                              │
-   │   min-tools-shell  147   bash with timeout + capture                      │
-   ▼                                                                           │
-┌───────────────────────────── min-core (no deps) ────────────────────────────┐
-│  Plugin trait · event bus · services · tool registry · run loop             │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
+Read [docs/architecture.md](docs/architecture.md) for the full architecture:
+diagrams, event semantics, dependency rules, worked examples, and how to
+write a plugin.
 
 ## Use
 
@@ -78,79 +64,32 @@ plan/endpoint mismatch, so check the message body:
   clients on the same key count too). min retries with exponential backoff
   (1→32s, honouring `Retry-After`) and shows `retrying in Ns` while waiting.
 
-## Design rules
+## Architecture in one paragraph
 
-1. **The core is only a loop.** It contains zero functionality and zero
-   policy: load plugins, dispatch events, repeat. `min-core` has no I/O, no
-   async, no deps — it cannot even print. When something is missing, the
-   default answer is a new plugin, never core code; touch the core only when
-   plugins cannot express the feature at all.
-2. **Every capability is a plugin.** UI, LLM client, tools, even the agent
-   loop itself — all of it lives in plugin crates and can be removed
-   independently.
-3. **Plugins never import each other.** They communicate only through
-   core-owned vocabulary: `emit(Event)`, `service::<T>()`, `tools()`.
-   Drop a plugin crate from the build and the rest still runs.
-4. **Synchronous, single-threaded, in-order.** `emit` delivers immediately.
-   Idle work happens in `Plugin::wait`, which may block (the repl blocks on
-   stdin — that's the whole event source). No tokio, no channels, no locks.
-5. **Complexity lives at the edge.** The biggest plugin (llm, ~430 lines)
-   absorbs wire-format uglyness so the agent loop can stay trivial.
+`min-core` provides four nouns — a `Plugin` trait, an event bus
+(`Hub::emit`), typed services (`Hub::service`), and a tool registry
+(`Hub::tools`) — and one verb: the run loop, which starts plugins, then
+alternates between calling `wait` on idle plugins (this is where blocking
+happens — the repl blocks on stdin) and dispatching each returned event to
+every plugin's `handle`, in load order, synchronously. That is the entire
+concurrency model; see [docs/architecture.md](docs/architecture.md).
 
-### Event semantics
+### Writing a plugin
 
-`hub.emit(e)` calls every plugin's `handle` right away, in load order. A
-plugin that is itself executing does not receive the event (nothing is
-queued). `Plugin::wait` returns an optional event that is emitted only after
-`wait` returns, so it reaches everyone — including the plugin that produced
-it. This is the entire concurrency model.
-
-### The plugin contract
+A crate, a struct, two impls, one line in `src/main.rs`. The full walkthrough
+(with a complete, working example) is in
+[docs/architecture.md](docs/architecture.md); in short:
 
 ```rust
-pub trait Plugin {
-    fn name(&self) -> &'static str;
-    fn start(&mut self, _hub: &Hub) {}                      // register things
-    fn wait(&mut self, _hub: &Hub) -> Option<Box<dyn Any>> { None } // idle; may block
-    fn handle(&mut self, _hub: &Hub, _event: &dyn Any) {}   // react to events
-}
-
-pub trait Tool {
-    fn name(&self) -> &'static str;
-    fn spec(&self) -> &'static str;   // {"description":…,"input_schema":…}
-    fn run(&self, input: &str) -> Result<String, String>;
-}
-```
-
-## Writing a plugin
-
-A crate, a struct, two impls, one line in `src/main.rs`:
-
-```rust
-// crates/min-tools-clock/src/lib.rs
-use min_core::{Hub, Plugin, Tool};
-
-pub struct ClockPlugin;
 impl Plugin for ClockPlugin {
     fn name(&self) -> &'static str { "clock" }
     fn start(&mut self, hub: &Hub) { hub.tools().register(Box::new(ClockTool)); }
 }
-
-struct ClockTool;
-impl Tool for ClockTool {
-    fn name(&self) -> &'static str { "clock" }
-    fn spec(&self) -> &'static str {
-        r#"{"description":"Current UTC time","input_schema":{"type":"object","properties":{}}}"#
-    }
-    fn run(&self, _input: &str) -> Result<String, String> {
-        Ok(format!("{}s since epoch", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()))
-    }
-}
+// …and a `struct ClockTool;` implementing `Tool` (name, spec, run).
 ```
 
-That's the whole API surface. A UI-less plugin can also just listen for
-events (`handle`) or publish state for others (`set_service`).
+The whole API surface is `Plugin { name, start, wait, handle }` and
+`Tool { name, spec, run }` — see the architecture doc's worked examples.
 
 ## Self-hosting
 
@@ -168,13 +107,8 @@ from this repository and ask it to add a plugin.
 
 ## Layout
 
-```
-crates/min-core          the bus: Plugin, Hub, events, Tool, ToolRegistry
-crates/min-repl          terminal UI
-crates/min-llm           Anthropic Messages + OpenAI chat client (streaming)
-crates/min-agent         conversation + tool loop, system prompt
-crates/min-tools-fs      read / edit / write
-crates/min-tools-shell   bash (timeout, output capture, truncation)
-crates/min-tools-clock  clock tool (the README example, built by min itself)
-src/main.rs              the only glue
-```
+See [docs/architecture.md](docs/architecture.md) for a guided tour of every
+crate. In brief: `crates/min-core` is the loop; `min-repl`, `min-llm`,
+`min-agent` and `min-tools-*` are the plugins (UI, LLM client, agent loop,
+filesystem/shell/clock tools); `src/main.rs` is the only glue — the plugin
+list.

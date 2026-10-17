@@ -3,14 +3,9 @@
 min is a minimal terminal agentic coding harness in Rust. Everything is a
 plugin to a tiny, dependency-free core.
 
-The architecture has one non-negotiable law, from which all rules below
-follow:
-
-> **The core is only a loop.** min's core contains zero functionality and
-> zero policy — it loads plugins and pumps events between them, forever.
-> Every capability (UI, LLM, tools, the agent loop itself) is a plugin.
-> When adding anything, the default is a new plugin, never core code. Only
-> change the core when plugins cannot express the feature at all.
+**Read [docs/architecture.md](docs/architecture.md) first** — it explains the
+architecture (core = only a loop, plugins = every capability) with diagrams
+and worked examples. The rules below follow from it.
 
 Rules when changing this codebase:
 
