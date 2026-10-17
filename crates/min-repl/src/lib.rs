@@ -7,12 +7,16 @@
 //! When stdin is not a tty (piped input) raw mode is skipped and lines are
 //! read as-is, so min can be scripted: `echo 'hello' | min`.
 //!
-//! Ctrl-C exits at any time (a SIGINT handler restores the terminal first);
-//! Ctrl-D quits at an empty prompt.
+//! Ctrl-C exits at any time: at the prompt it injects a `Quit` event like
+//! any other exit (ctrl-d, /quit), so plugins see it; mid-turn, where an
+//! interrupt cannot unwind through the blocking LLM call, a SIGINT handler
+//! restores the terminal and exits immediately. Ctrl-D quits at an empty
+//! prompt.
 
 use min_core::{events, Hub, Plugin};
 use std::any::Any;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod ansi;
 
@@ -63,6 +67,8 @@ impl Plugin for Repl {
 
     fn wait(&mut self, _hub: &Hub) -> Option<Box<dyn Any>> {
         let Some(line) = self.read_line() else {
+            // EOF — ctrl-d at the prompt, or SIGINT (see `on_sigint_quit`,
+            // which interrupts the blocked read and lets this path run).
             return Some(Box::new(events::Quit {}));
         };
         let line = line.trim().to_string();
@@ -86,7 +92,14 @@ impl Plugin for Repl {
                 self.put_line(&format!("unknown command {s} — try /help"));
                 None
             }
-            s => Some(Box::new(events::UserInput { text: s.to_string() })),
+            s => {
+                // A turn is starting: from here an interrupt cannot unwind
+                // through the blocking LLM call, so ctrl-c restores the
+                // terminal and hard-exits. `handle` re-arms the quitting
+                // handler when the turn ends.
+                install_sigint_exit_handler();
+                Some(Box::new(events::UserInput { text: s.to_string() }))
+            }
         }
     }
 
@@ -103,6 +116,9 @@ impl Plugin for Repl {
                 self.write("\n");
             }
             self.at_line_start = true;
+            // Back at (or heading for) the prompt: ctrl-c may quit through
+            // the event bus again rather than kill the process.
+            install_sigint_restore();
         } else if let Some(e) = event.downcast_ref::<events::ToolStart>() {
             self.put_line(&format!(
                 "  {} {} {}",
@@ -399,6 +415,12 @@ impl Repl {
 }
 
 fn read_byte() -> Option<u8> {
+    // Set by the SIGINT handler at the prompt; the same interrupt also
+    // breaks the read below with EINTR, so this only matters for reads that
+    // raced the flag.
+    if INTERRUPTED.load(Ordering::SeqCst) {
+        return None;
+    }
     let mut b = [0u8];
     match std::io::stdin().read(&mut b) {
         Ok(1) => Some(b[0]),
@@ -472,12 +494,10 @@ mod tests {
 // --- raw mode ---------------------------------------------------------------
 //
 // Minimal cooked→cbreak switch: turn off line buffering and echo, keep signal
-// generation (Ctrl-C still works, even mid-LLM-call). Restored on Drop, and
-// by the SIGINT handler if we die by interrupt.
+// generation (Ctrl-C still generates SIGINT, even mid-LLM-call). Restored on
+// Drop, and by the SIGINT handlers.
 
-struct RawMode {
-    orig: libc::termios,
-}
+struct RawMode;
 
 impl RawMode {
     fn enable() -> Option<RawMode> {
@@ -494,33 +514,94 @@ impl RawMode {
                 return None;
             }
             *std::ptr::addr_of_mut!(ORIG_TERMIOS) = Some(orig);
-            Some(RawMode { orig })
+            Some(RawMode)
         }
     }
 }
 
 impl Drop for RawMode {
     fn drop(&mut self) {
-        unsafe {
-            libc::tcsetattr(0, libc::TCSANOW, &self.orig);
-        }
+        unsafe { restore_termios() };
     }
 }
 
 static mut ORIG_TERMIOS: Option<libc::termios> = None;
 
-unsafe extern "C" fn on_sigint(_sig: libc::c_int) {
+/// Set when SIGINT arrives at the prompt; the repl turns it into `Quit`.
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+unsafe fn restore_termios() {
     unsafe {
         let orig = &*std::ptr::addr_of!(ORIG_TERMIOS);
         if let Some(t) = orig.as_ref() {
             libc::tcsetattr(0, libc::TCSANOW, t);
         }
+    }
+}
+
+/// SIGINT at the prompt: restore the terminal, set the flag, and *return*.
+/// The blocked raw `read()` then fails with `EINTR` (the handler is
+/// installed without `SA_RESTART` on purpose), `read_byte` maps that to
+/// `None`, and the repl's EOF path emits `Quit` — so plugins (min-herdr's
+/// release, anything later) see the exit instead of the process vanishing.
+unsafe extern "C" fn on_sigint_quit(_sig: libc::c_int) {
+    unsafe {
+        restore_termios();
+        INTERRUPTED.store(true, Ordering::SeqCst);
+    }
+}
+
+/// SIGINT mid-turn: the repl swapped this in when the turn started. An
+/// interrupt here cannot unwind through the blocking LLM call (std swallows
+/// the `EINTR`), so restore the terminal and hard-exit with the conventional
+/// 130 — the same visible outcome, just without events.
+unsafe extern "C" fn on_sigint_exit(_sig: libc::c_int) {
+    unsafe {
+        restore_termios();
         libc::_exit(130);
     }
 }
 
 fn install_sigint_restore() {
+    install_sigint_handler(on_sigint_quit);
+}
+
+fn install_sigint_exit_handler() {
+    install_sigint_handler(on_sigint_exit);
+}
+
+/// `signal`-equivalent registration, but without `SA_RESTART`: the point of
+/// the flag-and-return handler is that a blocked `read` wakes up.
+fn install_sigint_handler(handler: unsafe extern "C" fn(libc::c_int)) {
     unsafe {
-        libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t);
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = handler as *const () as usize;
+        libc::sigaction(libc::SIGINT, &action, std::ptr::null_mut());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod sigint_tests {
+    use super::*;
+
+    /// The handler is swapped for the hard-exit one during a turn (where an
+    /// interrupt cannot unwind through the blocking LLM call) and back
+    /// afterwards. Pin both directions; we cannot actually take SIGINT in a
+    /// test without killing the test runner.
+    #[test]
+    fn mid_turn_ctrl_c_swaps_handlers_and_back() {
+        install_sigint_restore();
+        install_sigint_exit_handler();
+        assert_eq!(sigint_handler(), on_sigint_exit as usize);
+        install_sigint_restore();
+        assert_eq!(sigint_handler(), on_sigint_quit as usize);
+    }
+
+    fn sigint_handler() -> usize {
+        unsafe {
+            let mut got: libc::sigaction = std::mem::zeroed();
+            assert_eq!(libc::sigaction(libc::SIGINT, std::ptr::null(), &mut got), 0);
+            got.sa_sigaction
+        }
     }
 }
