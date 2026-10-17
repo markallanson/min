@@ -31,20 +31,28 @@ export ANTHROPIC_API_KEY=sk-...
 min
 ```
 
-Any OpenAI-compatible endpoint works too (OpenRouter, Z.ai, vLLM, …):
+Built-in endpoint aliases make common providers a one-liner:
+
+```sh
+# Z.ai coding plan (OpenAI-compatible endpoint, model defaults to glm-5.3):
+export MIN_API=zai MIN_API_KEY=<your z.ai key>
+min
+```
+
+Any other OpenAI-compatible endpoint (OpenRouter, vLLM, …):
 
 ```sh
 export MIN_API=openai
 export MIN_BASE_URL=https://openrouter.ai/api/v1   # or another endpoint
 export MIN_API_KEY=...
-export MIN_MODEL=glm-5.3                           # whatever it serves
+export MIN_MODEL=<model>                           # whatever it serves
 ```
 
 | env var | default | meaning |
 |---|---|---|
-| `MIN_API` | `anthropic` | wire dialect: `anthropic` or `openai` |
-| `MIN_BASE_URL` | `https://api.anthropic.com` | API base URL |
-| `MIN_MODEL` | `claude-sonnet-4-5` | model name |
+| `MIN_API` | `anthropic` | `anthropic` · `openai` · `zai` (Z.ai coding plan) · `openrouter` — an alias sets dialect + base URL + default model |
+| `MIN_BASE_URL` | `https://api.anthropic.com` | API base URL (overrides the alias's choice) |
+| `MIN_MODEL` | `claude-sonnet-4-5` | model name (overrides the alias's choice) |
 | `MIN_MAX_TOKENS` | `16384` | max output tokens |
 | `ANTHROPIC_API_KEY` / `MIN_API_KEY` / `OPENAI_API_KEY` | — | API key |
 | `HTTPS_PROXY`, `NO_COLOR` | — | honoured as usual |

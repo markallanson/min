@@ -12,12 +12,15 @@
 //! so the rest of min never has to care which wire format is in use.
 //!
 //! Environment:
-//! - `MIN_API`            `"anthropic"` (default) or `"openai"`
-//! - `MIN_BASE_URL`       default `https://api.anthropic.com`
-//! - `MIN_MODEL`          default `claude-sonnet-4-5`
+//! - `MIN_API`            dialect or endpoint alias: `"anthropic"` (default),
+//!                        `"openai"`, `"zai"` (Z.ai coding plan), `"openrouter"`
+//! - `MIN_BASE_URL`       overrides the endpoint an alias picks (default
+//!                        `https://api.anthropic.com`)
+//! - `MIN_MODEL`          overrides the model an alias picks
+//!                        (default `claude-sonnet-4-5`)
 //! - `MIN_MAX_TOKENS`     default `16384`
 //! - `ANTHROPIC_API_KEY`  key for the anthropic dialect
-//! - `MIN_API_KEY` / `OPENAI_API_KEY`  key for the openai dialect
+//! - `MIN_API_KEY` / `OPENAI_API_KEY` / `ZAI_API_KEY`  keys for openai-style endpoints
 //! - `HTTPS_PROXY`        optional outbound proxy
 
 use min_core::{events, Hub, Plugin};
@@ -37,11 +40,12 @@ impl Plugin for LlmPlugin {
         let llm = Llm::from_env();
         if llm.api_key.is_empty() {
             hub.emit(events::Info {
-                text: "warning: no API key set (ANTHROPIC_API_KEY, or MIN_API_KEY/OPENAI_API_KEY for MIN_API=openai)".into(),
+                text: "warning: no API key set (ANTHROPIC_API_KEY, MIN_API_KEY/OPENAI_API_KEY, or ZAI_API_KEY for MIN_API=zai)".into(),
             });
         }
+        let host = llm.base.split("//").nth(1).unwrap_or(llm.base.as_str());
         hub.emit(events::Info {
-            text: format!("{} · {} — /help for commands", llm.api, llm.model),
+            text: format!("{} @ {} — /help for commands", llm.model, host),
         });
         hub.set_service(llm);
     }
@@ -67,25 +71,28 @@ impl Llm {
                 builder = builder.proxy(proxy);
             }
         }
-        let api = match std::env::var("MIN_API").unwrap_or_default().to_lowercase().as_str() {
-            "openai" => "openai",
-            _ => "anthropic",
+        let spec = std::env::var("MIN_API").unwrap_or_default().trim().to_lowercase();
+        let (api, base_default, model_default) = resolve_api(&spec);
+        let mut key_names: Vec<&str> = match api {
+            "openai" => vec!["MIN_API_KEY", "OPENAI_API_KEY"],
+            _ => vec!["ANTHROPIC_API_KEY"],
         };
-        let api_key = match api {
-            "openai" => std::env::var("MIN_API_KEY")
-                .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                .unwrap_or_default(),
-            _ => std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+        if spec == "zai" {
+            key_names.push("ZAI_API_KEY");
+        }
+        let base = std::env::var("MIN_BASE_URL").unwrap_or_default();
+        let base = {
+            let b = base.trim_end_matches('/');
+            if b.is_empty() { base_default.to_string() } else { b.to_string() }
         };
+        let model = std::env::var("MIN_MODEL").unwrap_or_default();
+        let model = if model.is_empty() { model_default.to_string() } else { model };
         Llm {
             http: builder.build(),
             api,
-            base: std::env::var("MIN_BASE_URL")
-                .unwrap_or_else(|_| "https://api.anthropic.com".into())
-                .trim_end_matches('/')
-                .to_string(),
-            api_key,
-            model: std::env::var("MIN_MODEL").unwrap_or_else(|_| "claude-sonnet-4-5".into()),
+            base,
+            api_key: first_env(&key_names),
+            model,
             max_tokens: std::env::var("MIN_MAX_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -285,6 +292,29 @@ impl Llm {
     }
 }
 
+/// `MIN_API` selectors: a wire dialect or an alias for a well-known
+/// OpenAI-compatible endpoint. Returns `(dialect, base url, default model)` —
+/// `MIN_BASE_URL` / `MIN_MODEL` still override the alias's picks.
+fn resolve_api(spec: &str) -> (&'static str, &'static str, &'static str) {
+    match spec {
+        "openai" => ("openai", "https://api.openai.com/v1", "gpt-4o"),
+        "zai" => ("openai", "https://api.z.ai/api/coding/paas/v4", "glm-5.3"),
+        "openrouter" => ("openai", "https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4.5"),
+        _ => ("anthropic", "https://api.anthropic.com", "claude-sonnet-4-5"),
+    }
+}
+
+fn first_env(names: &[&str]) -> String {
+    for n in names {
+        if let Ok(v) = std::env::var(n) {
+            if !v.is_empty() {
+                return v;
+            }
+        }
+    }
+    String::new()
+}
+
 /// Normalized stream accumulator shared by both dialects.
 #[derive(Default)]
 struct Blocks {
@@ -409,6 +439,16 @@ mod tests {
         assert_eq!(v["stop_reason"], "end_turn");
         assert_eq!(v["content"][0]["text"], "hi");
         assert_eq!(v["content"][1]["input"]["command"], "ls");
+    }
+
+    #[test]
+    fn api_aliases_resolve() {
+        let (api, base, model) = resolve_api("");
+        assert_eq!((api, base, model), ("anthropic", "https://api.anthropic.com", "claude-sonnet-4-5"));
+        let (api, base, model) = resolve_api("zai");
+        assert_eq!((api, base, model), ("openai", "https://api.z.ai/api/coding/paas/v4", "glm-5.3"));
+        assert_eq!(resolve_api("openai").0, "openai");
+        assert_eq!(resolve_api("openrouter").0, "openai");
     }
 
     #[test]
