@@ -6,3 +6,4 @@ description = "min plugin: report agent state to Herdr (idle / working / blocked
 
 [dependencies]
 min-core = { path = "../min-core" }
+min-session = { path = "../min-session" }

@@ -4,9 +4,16 @@
 //! `HERDR_BIN_PATH` at it, and drives the real plugin through the real
 //! `min_core::run` loop with a driver plugin emitting min's lifecycle
 //! events. The assertions are the exact argv Herdr would receive, in
-//! order — the whole CLI contract, end to end.
+//! order — the whole CLI contract, end to end (the seq is the wall clock
+//! in nanoseconds, so it is asserted to be fresh and increasing rather
+//! than pinned to a literal).
 //!
 //! Unix-only (the fake is a `#!/bin/sh` script).
+//!
+//! The first session announcement reaches the plugin because the harness
+//! includes the real `min_session` plugin, in its production load position:
+//! it announces from its first `wait`, so every report after the start-time
+//! registration carries `--agent-session-id`.
 
 #![cfg(unix)]
 
@@ -15,26 +22,33 @@ use std::any::Any;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Mutex;
 
+const SESSION_ID: &str = "1729180001-k3f9";
+
 /// Env vars are process-global and read inside `start()`; tests that touch
 /// them must not interleave (cargo runs a binary's tests in parallel).
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// Emits one event per herdr state, then quits through `wait` like the
-/// repl does — so the run loop exercises the release path on exit.
-struct Driver;
+/// Emits one event per herdr state — from its first `wait`, after the
+/// session announcement has reached everyone, like production where nothing
+/// happens before the bus is live — then quits through `wait` like the
+/// repl does, so the run loop exercises the release path on exit.
+struct Driver {
+    fired: bool,
+}
 
 impl Plugin for Driver {
     fn name(&self) -> &'static str {
         "driver"
     }
-    fn start(&mut self, hub: &Hub) {
-        // Dispatched in load order, after herdr's start(), so the plugin's
-        // env gate is already resolved — same as production.
-        hub.emit(events::UserInput { text: "hi".into() }); // → working
-        hub.emit(events::MessageEnd {}); // → idle
-        hub.emit(events::Error { text: "stuck".into() }); // → blocked
-    }
-    fn wait(&mut self, _hub: &Hub) -> Option<Box<dyn Any>> {
+    fn start(&mut self, _hub: &Hub) {}
+    fn wait(&mut self, hub: &Hub) -> Option<Box<dyn Any>> {
+        if !self.fired {
+            self.fired = true;
+            hub.emit(events::UserInput { text: "hi".into() }); // → working
+            hub.emit(events::MessageEnd {}); // → idle
+            hub.emit(events::Error { text: "stuck".into() }); // → blocked
+            return None;
+        }
         Some(Box::new(events::Quit {})) // → release
     }
     fn handle(&mut self, hub: &Hub, event: &dyn Any) {
@@ -49,13 +63,6 @@ struct FakeHerdr {
     dir: std::path::PathBuf,
     log: std::path::PathBuf,
 }
-
-/// The log line the plugin emits for one state, seq `n`.
-fn report_line(n: u64, state: &str) -> String {
-    format!("pane report-agent pane-test --source custom:min --agent min --seq {n} --state {state}")
-}
-
-const RELEASE_LINE: &str = "pane release-agent pane-test --source custom:min --agent min";
 
 fn install_fake_herdr(tag: &str) -> FakeHerdr {
     let dir = std::env::temp_dir().join(format!("min-herdr-it-{}-{tag}", std::process::id()));
@@ -80,11 +87,43 @@ fn set_herdr_env(fake: &FakeHerdr) {
     std::env::set_var("HERDR_BIN_PATH", fake.dir.join("herdr"));
 }
 
+const RELEASE_LINE: &str = "pane release-agent pane-test --source custom:min --agent min";
+
 fn harness() -> Vec<Box<dyn Plugin>> {
     vec![
+        Box::new(min_session::SessionPlugin::new(Some(SESSION_ID.into()), None)), // announces SessionStart from first wait
         Box::new(min_herdr::HerdrPlugin::new()), // production load order
-        Box::new(Driver),
+        Box::new(Driver { fired: false }),
     ]
+}
+
+/// One state report: exact flags, with the seq wildcarded — the seq is the
+/// wall clock in nanoseconds, so it is asserted to be fresh (unix nanos,
+/// not a small counter) and strictly increasing instead.
+fn assert_report(line: &str, state: &str, session: Option<&str>, prev_seq: &mut u64) {
+    let argv: Vec<&str> = line.split_whitespace().collect();
+    let seq_pos = argv.iter().position(|a| *a == "--seq").expect("--seq present");
+    let seq: u64 = argv[seq_pos + 1].parse().expect("--seq is a number");
+    assert!(seq > *prev_seq, "seq increases strictly, also across reports");
+    assert!(seq > 1_600_000_000_000_000_000, "seq is unix nanos, not 1, 2, 3…");
+    *prev_seq = seq;
+
+    let mut expected = vec![
+        "pane",
+        "report-agent",
+        "pane-test",
+        "--source",
+        "custom:min",
+        "--agent",
+        "min",
+        "--seq",
+        argv[seq_pos + 1],
+    ];
+    if let Some(id) = session {
+        expected.extend(["--agent-session-id", id]);
+    }
+    expected.extend(["--state", state]);
+    assert_eq!(argv, expected, "report argv for state {state:?}");
 }
 
 #[test]
@@ -97,16 +136,22 @@ fn registers_at_start_reports_lifecycle_then_releases() {
 
     clear_herdr_env();
     let log = std::fs::read_to_string(&fake.log).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
     assert_eq!(
-        log.lines().collect::<Vec<_>>(),
-        vec![
-            report_line(1, "idle"), // ← start(): registers before any user input
-            report_line(2, "working"),
-            report_line(3, "idle"),
-            report_line(4, "blocked"),
-            RELEASE_LINE.to_string(), // ← Quit (via wait): release
-        ],
-        "the full argv Herdr must receive, in report order"
+        lines.len(),
+        6,
+        "register, session-tagged register, working, idle, blocked, release"
+    );
+
+    let mut prev_seq = 0;
+    assert_report(lines[0], "idle", None, &mut prev_seq); // ← start(): no session id exists yet
+    assert_report(lines[1], "idle", Some(SESSION_ID), &mut prev_seq); // ← SessionStart re-report
+    assert_report(lines[2], "working", Some(SESSION_ID), &mut prev_seq);
+    assert_report(lines[3], "idle", Some(SESSION_ID), &mut prev_seq);
+    assert_report(lines[4], "blocked", Some(SESSION_ID), &mut prev_seq);
+    assert_eq!(
+        lines[5], RELEASE_LINE,
+        "← Quit (via wait): release, unchanged"
     );
     let _ = std::fs::remove_dir_all(&fake.dir);
 }

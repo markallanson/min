@@ -104,7 +104,7 @@ plugins loaded *before*, and the session announcement must reach everyone.)
    core: session.wait() → SessionStart { id: "1729180001-k3f9",
                                          parent: "1729179990" }
    core: dispatch → session-log opens 1729180001-k3f9.log (parent in header)
-                 → herdr keeps the id for its own bookkeeping, …
+                 → herdr re-reports idle with --agent-session-id 1729180001-k3f9, …
 
  $ /clear
    ResetConversation dispatched in load order:
@@ -112,7 +112,6 @@ plugins loaded *before*, and the session announcement must reach everyone.)
      context        → ClearPromptSections + fresh AGENTS.md sections
      agent (last)   → messages cleared
 ```
-
 ## What the tests pin
 
 - The startup path, core-style: silent through `start`; the first `wait`

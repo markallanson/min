@@ -309,7 +309,8 @@ crates/min-session-log   session activity → one append-only `<id>.log` per ses
 crates/min-tools-fs      read / edit / write                                 → plugins/tools-fs.md
 crates/min-tools-shell   bash (timeout, capture, truncation)                 → plugins/tools-shell.md
 crates/min-tools-clock   the plugins.md worked example, made real            → plugins/tools-clock.md
-crates/min-herdr         reports idle/working/blocked to Herdr via its CLI
-                         (active only when HERDR_ENV=1; releases on Quit)    → plugins/herdr.md
+crates/min-herdr         reports idle/working/blocked to Herdr via its CLI, tagged with
+                         min's session id (active only when HERDR_ENV=1; releases on Quit)
+                                                                             → plugins/herdr.md
 src/main.rs              the only glue: the plugin list
 ```

@@ -263,6 +263,7 @@ name = "min-herdr"
 version = "0.1.0"
 dependencies = [
  "min-core",
+ "min-session",
 ]
 
 [[package]]

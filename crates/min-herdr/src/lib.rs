@@ -18,18 +18,23 @@
 //! it) and is thereafter a pure listener: it maps min's events onto Herdr's
 //! `idle` / `working` / `blocked` states.
 //!
-//! | min moment   | herdr state |
-//! |--------------|-------------|
-//! | `start`      | `idle` — registers the agent |
-//! | `UserInput`  | `working`   |
-//! | `MessageEnd` | `idle`      |
-//! | `Error`      | `blocked`   |
-//! | `Quit`       | release     |
+//! | min moment       | herdr state |
+//! |------------------|-------------|
+//! | `start`          | `idle` — registers the agent (no session id yet) |
+//! | `SessionStart`   | re-report of the current state, tagged `--agent-session-id` |
+//! | `UserInput`      | `working`   |
+//! | `MessageEnd`     | `idle`      |
+//! | `Error`          | `blocked`   |
+//! | `SessionEnd`     | forget the id (no report) |
+//! | `Quit`           | release     |
 //!
 //! Reports go out synchronously from `start`/`handle`; a report is one fast
-//! local spawn against Herdr's socket, and Herdr is expected to keep up. `--seq`
-//! is strictly increasing per process so Herdr can drop stale, out-of-order
-//! reports from the same source.
+//! local spawn against Herdr's socket, and Herdr is expected to keep up.
+//! `--seq` is wall-clock nanoseconds — strictly increasing per report, and
+//! across runs of min — so Herdr can drop stale, out-of-order reports from
+//! the same source. `--agent-session-id` carries min's session id so Herdr
+//! can tell min's sessions apart (e.g. across `/clear`) under the one
+//! stable `custom:min` source.
 
 use min_core::{events, Hub, Plugin};
 use std::any::Any;
@@ -44,9 +49,24 @@ const AGENT: &str = "min";
 pub struct HerdrPlugin {
     /// Full config once the env gate passes; `None` = not inside Herdr.
     cfg: Option<Config>,
-    /// Strictly increasing sequence number, per source, for stale-report
-    /// rejection. The first report carries `--seq 1`.
-    seq: u64,
+    /// The last sequence number handed out. The next is always strictly
+    /// greater: `next_seq` starts from wall-clock nanos and refuses to go
+    /// backwards, so reports remain fresh even if the clock steps back
+    /// (NTP correction, VM suspend) or min was killed without a `Quit` —
+    /// a plain per-process counter restarting at 1 could be stale against
+    /// the previous run's reports and be dropped by Herdr.
+    last_seq: u64,
+    /// The current min session id, as announced by [`events::SessionStart`].
+    /// Sent as `--agent-session-id` so Herdr can distinguish min's sessions
+    /// under the one stable source. `None` until the first announcement —
+    /// the registration report at `start` necessarily goes without it,
+    /// because the session plugin announces from its first `wait`, which
+    /// only runs once every plugin has started.
+    session: Option<String>,
+    /// The last state reported. A session change does not change min's
+    /// state, but the replacement id must be associated, so `SessionStart`
+    /// re-reports whatever this was.
+    state: &'static str,
 }
 
 struct Config {
@@ -58,7 +78,7 @@ struct Config {
 
 impl HerdrPlugin {
     pub fn new() -> Self {
-        HerdrPlugin { cfg: None, seq: 0 }
+        HerdrPlugin { cfg: None, last_seq: 0, session: None, state: "idle" }
     }
 
     /// True when running inside a Herdr pane. The docs require gating on
@@ -70,13 +90,15 @@ impl HerdrPlugin {
             && env_nonempty("HERDR_PANE_ID")
     }
 
-    /// Spawn the herdr CLI with the given `report-agent` arguments. A
-    /// failed spawn is silently ignored — reporting must never disturb
-    /// min itself (or this would not be a no-op outside Herdr).
-    fn report(&mut self, extra: &[&str]) {
+    /// Spawn the herdr CLI with a `report-agent` for `state`. A failed
+    /// spawn is silently ignored — reporting must never disturb min itself
+    /// (or this would not be a no-op outside Herdr).
+    fn report(&mut self, state: &'static str) {
         let Some(cfg) = &self.cfg else { return };
-        self.seq += 1;
-        let argv = report_args(cfg, self.seq, extra);
+        let seq = next_seq(self.last_seq, now_seq());
+        self.last_seq = seq;
+        self.state = state;
+        let argv = report_args(cfg, seq, self.session.as_deref(), state);
         let _ = Command::new(&argv[0]).args(&argv[1..]).output();
     }
 
@@ -92,9 +114,29 @@ fn env_nonempty(key: &str) -> bool {
     std::env::var(key).map(|v| !v.is_empty()) == Ok(true)
 }
 
+/// The sequence number for a report: unix time in nanoseconds, like
+/// Herdr's own integrations. Monotonic across runs of min.
+fn now_seq() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+/// Strictly greater than `last`, never below the clock: a backwards-stepping
+/// clock (NTP, suspend) must not make two reports tie or regress.
+fn next_seq(last: u64, now: u64) -> u64 {
+    if now > last {
+        now
+    } else {
+        last + 1
+    }
+}
+
 /// One `pane report-agent` invocation, as full argv. Pure so tests can
-/// assert the exact CLI contract.
-fn report_args(cfg: &Config, seq: u64, extra: &[&str]) -> Vec<String> {
+/// assert the exact CLI contract. `session` — min's current session id,
+/// when one has been announced — is passed as `--agent-session-id`.
+fn report_args(cfg: &Config, seq: u64, session: Option<&str>, state: &str) -> Vec<String> {
     let mut argv = vec![
         cfg.bin.clone(),
         "pane".into(),
@@ -107,7 +149,12 @@ fn report_args(cfg: &Config, seq: u64, extra: &[&str]) -> Vec<String> {
         "--seq".into(),
         seq.to_string(),
     ];
-    argv.extend(extra.iter().map(|s| s.to_string()));
+    if let Some(id) = session {
+        argv.push("--agent-session-id".into());
+        argv.push(id.to_string());
+    }
+    argv.push("--state".into());
+    argv.push(state.to_string());
     argv
 }
 
@@ -145,7 +192,10 @@ impl Plugin for HerdrPlugin {
             // Register at once, not at the first message: Herdr only tracks
             // an agent after its first report, so without this the pane would
             // show nothing until the user typed. min is idle at startup.
-            self.report(&["--state", "idle"]);
+            // No session id yet — the session plugin announces from its
+            // first `wait`, after every plugin has started; `SessionStart`
+            // below re-reports under the id as soon as it arrives.
+            self.report("idle");
         }
     }
 
@@ -155,12 +205,23 @@ impl Plugin for HerdrPlugin {
         if self.cfg.is_none() {
             return;
         }
-        if event.downcast_ref::<events::UserInput>().is_some() {
-            self.report(&["--state", "working"]);
+        if let Some(e) = event.downcast_ref::<events::SessionStart>() {
+            // Remember the id (the session plugin's prescribed pattern:
+            // keep the last id you saw), then re-report the current state
+            // so Herdr associates it with the new session — a `/clear`
+            // does not otherwise produce a report.
+            self.session = Some(e.id.clone());
+            self.report(self.state);
+        } else if event.downcast_ref::<events::SessionEnd>().is_some() {
+            // The id is gone; reports in the gap (there are none — End is
+            // immediately followed by Start or Quit) must not carry it.
+            self.session = None;
+        } else if event.downcast_ref::<events::UserInput>().is_some() {
+            self.report("working");
         } else if event.downcast_ref::<events::MessageEnd>().is_some() {
-            self.report(&["--state", "idle"]);
+            self.report("idle");
         } else if event.downcast_ref::<events::Error>().is_some() {
-            self.report(&["--state", "blocked"]);
+            self.report("blocked");
         } else if event.downcast_ref::<events::Quit>().is_some() {
             // When min exits (any path that reaches the bus: /quit, ctrl-d,
             // ctrl-c at the prompt), release the same source's lifecycle
@@ -176,20 +237,40 @@ mod tests {
     use super::*;
 
     fn cfg() -> Config {
-        Config { bin: "herdr".into(), pane: "pane-7".into() }
+        // A bin that cannot exist: stateful tests below drive `report`, and
+        // the failed spawn must stay a silent no-op (never touch a real
+        // herdr that might be installed on the test machine).
+        Config { bin: "./min-herdr-test-no-such-bin".into(), pane: "pane-7".into() }
     }
 
     #[test]
     fn report_argv_matches_herdr_cli_contract() {
-        let argv = report_args(&cfg(), 3, &["--state", "working"]);
+        let argv = report_args(&cfg(), 3, Some("1729180001-k3f9"), "working");
         assert_eq!(
             argv,
             vec![
-                "herdr", "pane", "report-agent", "pane-7",
+                "./min-herdr-test-no-such-bin", "pane", "report-agent", "pane-7",
                 "--source", "custom:min",
                 "--agent", "min",
                 "--seq", "3",
+                "--agent-session-id", "1729180001-k3f9",
                 "--state", "working",
+            ]
+        );
+    }
+
+    #[test]
+    fn report_argv_without_a_session_has_no_session_flag() {
+        // The registration report at `start` — no SessionStart can have run.
+        let argv = report_args(&cfg(), 1, None, "idle");
+        assert_eq!(
+            argv,
+            vec![
+                "./min-herdr-test-no-such-bin", "pane", "report-agent", "pane-7",
+                "--source", "custom:min",
+                "--agent", "min",
+                "--seq", "1",
+                "--state", "idle",
             ]
         );
     }
@@ -200,7 +281,7 @@ mod tests {
         assert_eq!(
             argv,
             vec![
-                "herdr", "pane", "release-agent", "pane-7",
+                "./min-herdr-test-no-such-bin", "pane", "release-agent", "pane-7",
                 "--source", "custom:min",
                 "--agent", "min",
             ]
@@ -240,18 +321,62 @@ mod tests {
         p.handle(&hub, &events::UserInput { text: "hi".into() });
         p.handle(&hub, &events::MessageEnd {});
         p.handle(&hub, &events::Error { text: "e".into() });
+        p.handle(&hub, &events::SessionStart { id: "1-s".into(), parent: None });
         p.handle(&hub, &events::Quit {});
-        assert_eq!(p.seq, 0, "no reports without the env gate");
+        assert_eq!(p.last_seq, 0, "no reports without the env gate");
+        assert!(p.session.is_none());
     }
 
     #[test]
     fn seq_is_strictly_increasing() {
         let mut p = HerdrPlugin::new();
         p.cfg = Some(cfg());
-        p.report(&["--state", "working"]);
-        p.report(&["--state", "idle"]);
-        p.report(&["--state", "blocked"]);
-        assert_eq!(p.seq, 3);
+        p.report("working");
+        p.report("idle");
+        p.report("blocked");
+        assert!(p.last_seq > 0, "seq starts at the wall clock, not 1");
+        // report() stores each seq before spawning the (failing) CLI.
+        let first = p.last_seq;
+        p.report("idle");
+        assert!(p.last_seq > first, "each report is strictly newer");
+    }
+
+    #[test]
+    fn next_seq_survives_a_backwards_clock() {
+        // Normal case: follow the clock.
+        assert_eq!(next_seq(100, 200), 200);
+        // Clock behind the last report (NTP step, VM suspend): still move.
+        assert_eq!(next_seq(200, 100), 201);
+        // Never tie, however many times the clock lands in the same nanosecond.
+        assert_eq!(next_seq(201, 100), 202);
+    }
+
+    #[test]
+    fn session_start_reassociates_and_rereports_the_state() {
+        let mut p = HerdrPlugin::new();
+        p.cfg = Some(cfg());
+        p.report("working");
+        assert!(p.session.is_none());
+
+        p.handle(
+            &Hub::new(vec![]),
+            &events::SessionStart { id: "1729180001-k3f9".into(), parent: None },
+        );
+        // The last id is kept (the session plugin's prescribed pattern) …
+        assert_eq!(p.session.as_deref(), Some("1729180001-k3f9"));
+        // … and the current state was re-reported, so the id is associated
+        // even though `/clear` itself changes no state.
+        assert_eq!(p.state, "working");
+        assert!(p.last_seq > 0);
+    }
+
+    #[test]
+    fn session_end_forgets_the_id() {
+        let mut p = HerdrPlugin::new();
+        p.cfg = Some(cfg());
+        p.session = Some("1729180001-k3f9".into());
+        p.handle(&Hub::new(vec![]), &events::SessionEnd { id: "1729180001-k3f9".into() });
+        assert!(p.session.is_none());
     }
 
     #[test]

@@ -56,7 +56,7 @@ the tests pin.
 | shell | [tools-shell.md](plugins/tools-shell.md) | capability | `bash` with timeout, deadlock-free capture, output truncation |
 | clock | [tools-clock.md](plugins/tools-clock.md) | capability | current UTC time — the worked example, made real |
 | context | [context.md](plugins/context.md) | source + listener | `~/.config/min/AGENTS.md` + project files → system-prompt sections |
-| herdr | [herdr.md](plugins/herdr.md) | listener | agent state → Herdr (no-op outside a Herdr pane) |
+| herdr | [herdr.md](plugins/herdr.md) | listener | agent state → Herdr (no-op outside a Herdr pane; reports `--agent-session-id`) |
 | agent | [agent.md](plugins/agent.md) | listener/worker | the agent loop: LLM ↔ tools until done |
 
 Load order is exactly this table's order (bottom of `src/main.rs` is the
