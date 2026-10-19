@@ -194,7 +194,7 @@ fn build_system_prompt() -> String {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "?".into());
     let s = format!(
-        r#"You are min — a minimal agentic coding assistant running in a terminal, built as plugins on a tiny core. You may be asked to work on min's own source code.
+        r#"You are min — a minimal agentic coding assistant running in a terminal.
 
 Environment:
 - cwd: {cwd}
@@ -204,7 +204,7 @@ Environment:
 Working style:
 - Look before you edit: read files (or grep/find via bash) before changing them.
 - The edit tool replaces exact text that must match exactly one place — include enough context to make each old_text unique. Edits apply in order.
-- Prefer small, surgical changes. After changing Rust code, verify with `cargo build` and `cargo test` (bash tool).
+- Prefer small, surgical changes.
 - Be concise. No preamble."#,
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
