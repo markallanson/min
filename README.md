@@ -58,6 +58,9 @@ export MIN_MODEL=<model>                           # whatever it serves
 
 ```sh
 min                          # a fresh session id every run
+min --resume                 # resume the latest session in this project
+min --resume 1729180001-k3f9 # resume a specific session by id
+min --sessions               # list sessions in this project
 min --session 1729180000     # pin the first session's id
 min --parent-session 1729179990   # the first session is its child
 ```
@@ -107,19 +110,17 @@ from this repository and ask it to add a plugin.
 
 ## Limitations (on purpose, for now)
 
-- single conversation, no session persistence (a session is just the id for
-  the current run, re-rolled on `/clear`), no context-window management
+- no context-window compaction
 - no way to interrupt a running turn except Ctrl-C (which exits min)
 - no token/cost accounting, no retries mid-stream, no diff preview
 - multiline input is one line; no tab completion
-- input history is in-memory only (lost on exit)
 
 ## Layout
 
 See [docs/architecture.md](docs/architecture.md) for a guided tour of every
 crate. In brief: `crates/min-core` is the loop; `min-repl`, `min-llm`,
-`min-agent`, `min-context`, `min-session`, `min-session-log`, `min-herdr`
+`min-agent`, `min-context`, `min-session`, `min-subagents`, `min-herdr`
 and `min-tools-*` are the plugins (UI, LLM client, agent loop, project
-instructions, session identity, session activity log, Herdr reporting,
-filesystem/shell/clock tools); `src/main.rs` is the only glue — the plugin
-list.
+instructions, session identity + JSONL store/resume, subagents, Herdr
+reporting, filesystem/shell/clock tools); `src/main.rs` is the only glue —
+the plugin list.

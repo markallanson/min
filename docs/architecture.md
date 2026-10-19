@@ -24,16 +24,16 @@ plugin — the hooks, the three shapes, a complete worked example — see
     │
     │  plugins, in load order (never import each other — only min-core)
     │
+    │   min-session       session identity (`<epoch>-<rand>`), JSONL store
+    │                     (XDG state dir), `--sessions` listing, `--resume`
+    │   min-herdr         agent state → Herdr (no-op outside a Herdr pane)
     │   min-repl          terminal UI: raw-mode editor, streaming output
-    │   min-session       session identity: unique id + parent, announced to all
-    │   min-session-log   session activity → one append-only log per session
-    │                     (XDG state dir)
     │   min-llm           streaming LLM client (anthropic + openai wire)
     │   min-tools-fs      read / edit / write
     │   min-tools-shell   bash with timeout + output capture
     │   min-tools-clock   current UTC time
+    │   min-subagents     subagent tools: fork `min --parent-session <id>`
     │   min-context       ~/.config/min/AGENTS.md + project files → system prompt
-    │   min-herdr         agent state → Herdr (no-op outside a Herdr pane)
     │   min-agent         the agent loop: LLM ↔ tools until done
     ▼
  ┌──────────────── min-core — the loop (zero deps) ───────────────┐
@@ -161,6 +161,9 @@ The catalogue — pure data, no behaviour:
 | `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note, first lines of the result as `preview` |
 | `Info` / `Error` | any → repl | human-facing status |
 | `SessionStart` / `SessionEnd` | session → everyone | session id + parent / id — a fresh id on boot and `/clear` |
+| `ConversationMessage` | agent → session | `json` — serialized conversation message appended to agent history |
+| `ReplayMessage` | session → agent, repl | `json` — persisted conversation message replayed on `--resume` |
+| `ReplayExchange` | session → repl | `prompt`, `reply` — last exchange printed on `--resume` |
 | `ResetConversation` | repl → everyone | (none) — context re-reads AGENTS.md, session re-rolls the id on it |
 | `ClearPromptSections` | context → agent | (none) — agent drops its collected sections |
 | `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
@@ -302,14 +305,9 @@ crates/min-llm           Anthropic Messages + OpenAI chat clients (streaming) �
 crates/min-agent         conversation state + tool loop + system prompt       → plugins/agent.md
 crates/min-context       AGENTS.md (~/.config/min first, then whole tree, root-first) → system prompt
                                                                              → plugins/context.md
-crates/min-session       session identity: unique `<epoch>-<rand>` id (+ optional parent),
-                         announced to every plugin on boot (from first `wait`) and on
-                         each `/clear`; the entropy suffix keeps same-second sessions apart
-                                                                             → plugins/session.md
-crates/min-session-log   session activity → one append-only `<id>.log` per session, in a
-                         per-project directory under `$XDG_STATE_HOME/min/sessions` (default
-                         `~/.local/state/...`): header, prompts, assistant messages, tool calls,
-                         errors                                              → plugins/session-log.md
+crates/min-session       session identity (`<epoch>-<rand>`), JSONL persistence under
+                         `$XDG_STATE_HOME/min/sessions/<project>/<id>.jsonl`, `--sessions`
+                         listing, and `--resume [<id>]`                       → plugins/session.md
 crates/min-tools-fs      read / edit / write                                 → plugins/tools-fs.md
 crates/min-tools-shell   bash (timeout, capture, truncation)                 → plugins/tools-shell.md
 crates/min-tools-clock   the plugins.md worked example, made real            → plugins/tools-clock.md

@@ -48,16 +48,15 @@ the tests pin.
 
 | plugin | document | shape | one line |
 |---|---|---|---|
+| session | [session.md](plugins/session.md) | source + listener | session identity (`<epoch>-<rand>`), JSONL persistence (XDG state dir), `--sessions` listing, and `--resume` |
+| herdr | [herdr.md](plugins/herdr.md) | listener | agent state → Herdr (no-op outside a Herdr pane; reports `--agent-session-id`) |
 | repl | [repl.md](plugins/repl.md) | source | terminal UI: raw-mode editor, streaming output, owns `Quit` |
-| session | [session.md](plugins/session.md) | source + listener | session identity: unique `<epoch>-<rand>` id (+ optional parent), announced to all |
-| session-log | [session-log.md](plugins/session-log.md) | listener | session activity → one append-only log per session (XDG state dir) |
 | llm | [llm.md](plugins/llm.md) | provider | streaming LLM service (anthropic + openai wire), retries, z.ai mirror |
 | fs | [tools-fs.md](plugins/tools-fs.md) | capability | `read` / `edit` / `write` — exact-match, atomic edits |
 | shell | [tools-shell.md](plugins/tools-shell.md) | capability | `bash` with timeout, deadlock-free capture, output truncation |
 | clock | [tools-clock.md](plugins/tools-clock.md) | capability | current UTC time — the worked example, made real |
 | subagents | [subagents.md](plugins/subagents.md) | capability + listener | `subagent` (one call, blocks) / `subagent_spawn` + `subagent_collect` (start many, join in parallel) — one `min` process per instruction, parented on this session |
 | context | [context.md](plugins/context.md) | source + listener | `~/.config/min/AGENTS.md` + project files → system-prompt sections |
-| herdr | [herdr.md](plugins/herdr.md) | listener | agent state → Herdr (no-op outside a Herdr pane; reports `--agent-session-id`) |
 | agent | [agent.md](plugins/agent.md) | listener/worker | the agent loop: LLM ↔ tools until done |
 
 Load order is exactly this table's order (bottom of `src/main.rs` is the
@@ -187,6 +186,9 @@ plugins never import each other:
 | `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note, first lines of the result as `preview` |
 | `Info` / `Error` | any → repl | human-facing status |
 | `SessionStart` / `SessionEnd` | session → everyone | session id + parent / id — a fresh id on boot and `/clear` |
+| `ConversationMessage` | agent → session | `json` — serialized conversation message appended to agent history |
+| `ReplayMessage` | session → agent, repl | `json` — persisted conversation message replayed on `--resume` |
+| `ReplayExchange` | session → repl | `prompt`, `reply` — last exchange printed on `--resume` |
 | `ResetConversation` | repl → everyone | (none) — context re-reads instruction files, session re-rolls the id |
 | `ClearPromptSections` | context → agent | (none) — agent drops its collected system-prompt sections |
 | `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |

@@ -7,3 +7,4 @@ description = "min plugin: terminal UI — raw-mode line editor and streaming di
 [dependencies]
 min-core = { path = "../min-core" }
 libc = "0.2"
+serde_json = "1"

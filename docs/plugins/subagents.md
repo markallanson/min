@@ -124,8 +124,8 @@ in the core's registry while the plugin keeps receiving events.
 
 **Why a fork and not a nested loop:** the child is a whole min — fresh
 context window, its own conversation, its own session id, its own session
-log (min-session-log files it under the parent's directory, because of
-`--parent-session`). It even loads the project's `AGENTS.md` like any
+JSONL file (min-session files it under the parent's project directory, with
+`parent` set from `--parent-session`). It even loads the project's `AGENTS.md` like any
 other run. The parent's context stays clean: it sees one tool result per
 subagent, not their whole transcripts. And because children are processes,
 parallelism costs the core nothing — the parent process never grows a
@@ -214,9 +214,9 @@ answer — then quits at EOF. Two subagents, two sessions, two logs — one
 
 ```
   $ ls ~/.local/state/min/sessions/<project>/
-  1764-k3fx.log          ← parent
-  1764-lm2q.log          ← child 1 (parent field: 1764-k3fx)
-  1764-mm8d.log          ← child 2 (parent field: 1764-k3fx)
+  1764-k3fx.jsonl        ← parent
+  1764-lm2q.jsonl        ← child 1 (parent field: 1764-k3fx)
+  1764-mm8d.jsonl        ← child 2 (parent field: 1764-k3fx)
 ```
 
 ## What the tests pin
@@ -257,13 +257,12 @@ injectable field, so the full JSON-input → spawn → stdin → drain → statu
 ## See also
 
 - [session.md](session.md) — where the parent id comes from (`SessionStart`),
-  and what `--parent-session` does to the child's first session.
+  what `--parent-session` does to the child's first session, and how child
+  `.jsonl` files land under the project directory.
 - [tools-shell.md](tools-shell.md) — the spawn/drain/truncate pattern these
   tools follow (threads per pipe, poll + kill, head/tail truncation).
 - [repl.md](repl.md) — the non-tty input path that makes "write a line,
   close stdin" a complete one-turn run.
 - [agent.md](agent.md) — how tool results (including an `Err` one) flow
   back into the parent's conversation.
-- [session-log.md](session-log.md) — why subagent logs land under the
-  parent's project directory.
 - [plugins.md](plugins.md).

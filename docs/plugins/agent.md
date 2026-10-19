@@ -65,6 +65,7 @@ the only line of work that leaves the plugin (via the service).
 | event | reaction |
 |---|---|
 | `UserInput` | run a full turn (blocks the bus for its duration — that is by design; nothing else is happening) |
+| `ReplayMessage` | parse `json` and append to `messages` (restoring conversation history on `--resume`) |
 | `SystemPromptSection` | collect `(title, body)` into `sections` |
 | `ClearPromptSections` | drop all collected sections (the emitter re-sends fresh ones immediately after) |
 | `ResetConversation` | clear `messages`, emit `Info("conversation cleared")` |
@@ -73,6 +74,7 @@ the only line of work that leaves the plugin (via the service).
 
 | event | when |
 |---|---|
+| `ConversationMessage` | whenever a message (`user`, `assistant`, or `tool_result`) is pushed to `messages` |
 | `LlmStart` | before each `llm.complete` call — `round` (1-based), `model`, `messages` count, `tools` count |
 | `Thinking` | every non-text stream chunk from `on_thinking` — `text` (reasoning tokens) and `tool` (name of the tool call being streamed) |
 | `AssistantDelta` | every streamed text chunk, forwarded from the LLM's `on_delta` callback |
@@ -149,6 +151,8 @@ tool-call loop ends the turn with an `Error` instead of hanging forever.
   boundaries (a byte-cut would tear a multi-byte character).
 - Sections arrive via events, not file reads; `ClearPromptSections` drops
   old ones so a re-emitted file replaces rather than duplicates.
+- `push_message` emits `ConversationMessage` and `ReplayMessage` restores
+  `messages` without re-emitting.
 
 ## See also
 

@@ -63,18 +63,29 @@ impl Plugin for AgentPlugin {
             hub.emit(events::Info {
                 text: "conversation cleared".into(),
             });
+        } else if let Some(e) = event.downcast_ref::<events::ReplayMessage>() {
+            if let Ok(msg) = serde_json::from_str::<Value>(&e.json) {
+                self.messages.push(msg);
+            }
         }
     }
 }
 
 impl AgentPlugin {
+    fn push_message(&mut self, hub: &Hub, msg: Value) {
+        hub.emit(events::ConversationMessage {
+            json: msg.to_string(),
+        });
+        self.messages.push(msg);
+    }
+
     fn turn(&mut self, hub: &Hub, user_text: &str) {
         // Base prompt plus any sections plugins handed us (refreshed on /clear).
         let mut system = self.system.clone();
         for (title, body) in &self.sections {
             system.push_str(&format!("\n\n# {title}\n\n{body}"));
         }
-        self.messages.push(json!({"role": "user", "content": user_text}));
+        self.push_message(hub, json!({"role": "user", "content": user_text}));
         for round in 1..=MAX_ROUNDS {
             let Some(llm) = hub.service::<min_llm::Llm>() else {
                 hub.emit(events::Error {
@@ -125,8 +136,10 @@ impl AgentPlugin {
                 }
             };
             hub.emit(events::MessageEnd {});
-            self.messages
-                .push(json!({"role": "assistant", "content": message["content"].clone()}));
+            self.push_message(
+                hub,
+                json!({"role": "assistant", "content": message["content"].clone()}),
+            );
 
             let calls: Vec<Value> = message["content"]
                 .as_array()
@@ -140,8 +153,7 @@ impl AgentPlugin {
             for call in calls {
                 results.push(self.run_tool(hub, &call));
             }
-            self.messages
-                .push(json!({"role": "user", "content": results}));
+            self.push_message(hub, json!({"role": "user", "content": results}));
         }
         hub.emit(events::Error {
             text: format!("gave up: more than {MAX_ROUNDS} tool rounds in one turn"),
@@ -331,5 +343,50 @@ mod tests {
             "Project instructions (AGENTS.md)".into(),
             "new rules".into(),
         )]);
+    }
+
+    #[test]
+    fn push_message_emits_conversation_message_and_replay_restores_messages() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        struct MsgRecorder(Rc<RefCell<Vec<String>>>);
+        impl Plugin for MsgRecorder {
+            fn name(&self) -> &'static str {
+                "msg-rec"
+            }
+            fn handle(&mut self, _hub: &Hub, event: &dyn Any) {
+                if let Some(e) = event.downcast_ref::<events::ConversationMessage>() {
+                    self.0.borrow_mut().push(e.json.clone());
+                }
+            }
+        }
+
+        let recorded = Rc::new(RefCell::new(Vec::new()));
+        let hub = Hub::new(vec![Box::new(MsgRecorder(recorded.clone()))]);
+        let mut agent = AgentPlugin::new();
+
+        // ReplayMessage restores conversation history without re-emitting ConversationMessage.
+        agent.handle(
+            &hub,
+            &events::ReplayMessage {
+                json: json!({"role": "user", "content": "first"}).to_string(),
+            },
+        );
+        agent.handle(
+            &hub,
+            &events::ReplayMessage {
+                json: json!({"role": "assistant", "content": [{"type": "text", "text": "reply"}]}).to_string(),
+            },
+        );
+        assert_eq!(agent.messages.len(), 2);
+        assert!(recorded.borrow().is_empty());
+
+        // push_message appends to self.messages AND emits ConversationMessage.
+        agent.push_message(&hub, json!({"role": "user", "content": "second"}));
+        assert_eq!(agent.messages.len(), 3);
+        assert_eq!(recorded.borrow().len(), 1);
+        let emitted: Value = serde_json::from_str(&recorded.borrow()[0]).unwrap();
+        assert_eq!(emitted, json!({"role": "user", "content": "second"}));
     }
 }

@@ -1,9 +1,0 @@
-[package]
-name = "min-session-log"
-version.workspace = true
-edition.workspace = true
-description = "min plugin: session activity log — one append-only file per session under the XDG state directory"
-
-[dependencies]
-min-core = { path = "../min-core" }
-serde_json = "1"

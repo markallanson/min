@@ -2,7 +2,8 @@
 name = "min-session"
 version.workspace = true
 edition.workspace = true
-description = "session identity: a unique id for the work min is doing, announced to every plugin"
+description = "session identity, JSONL persistence, listing, and resume"
 
 [dependencies]
 min-core = { path = "../min-core" }
+serde_json = "1"

@@ -110,5 +110,25 @@ pub struct SessionEnd {
     pub id: String,
 }
 
+/// A conversation message was appended to the agent's history (agent → session).
+/// Carries the serialized JSON of the message (`{"role": ..., "content": ...}`)
+/// so `min-core` stays dependency-free.
+pub struct ConversationMessage {
+    pub json: String,
+}
+
+/// A persisted conversation message replayed when resuming a session
+/// (session → agent, repl).
+pub struct ReplayMessage {
+    pub json: String,
+}
+
+/// The last prompt/reply exchange of a resumed session (session → repl),
+/// emitted after [`ReplayMessage`]s so the user sees where they left off.
+pub struct ReplayExchange {
+    pub prompt: String,
+    pub reply: String,
+}
+
 /// Shut down the harness (repl → everyone).
 pub struct Quit {}

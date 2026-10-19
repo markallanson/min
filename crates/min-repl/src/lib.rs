@@ -152,6 +152,23 @@ impl Plugin for Repl {
             for line in e.preview.lines() {
                 self.put_line(&format!("  {}", ansi::dim(line)));
             }
+        } else if let Some(e) = event.downcast_ref::<events::ReplayMessage>() {
+            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&e.json) {
+                if msg["role"] == "user" {
+                    if let Some(s) = msg["content"].as_str() {
+                        let s = s.trim();
+                        if !s.is_empty() && self.history.last().map(|h| h.as_str()) != Some(s) {
+                            self.history.push(s.to_string());
+                            self.hist_idx = self.history.len();
+                        }
+                    }
+                }
+            }
+        } else if let Some(e) = event.downcast_ref::<events::ReplayExchange>() {
+            self.put_line(&format!("{} {}", ansi::cyan("❯"), e.prompt));
+            if !e.reply.is_empty() {
+                self.put_line(&e.reply);
+            }
         } else if let Some(e) = event.downcast_ref::<events::Info>() {
             self.put_line(&ansi::dim(&e.text));
         } else if let Some(e) = event.downcast_ref::<events::Error>() {
@@ -587,6 +604,50 @@ mod tests {
         // cursor in the middle, on a char boundary after 'é'
         assert_eq!(r.char_count_before(3), 2);
     }
+
+    #[test]
+    fn replay_message_populates_history_ignoring_tool_results_and_duplicates() {
+        let mut r = Repl::new();
+        r.tty = false;
+        let hub = Hub::new(vec![]);
+
+        r.handle(
+            &hub,
+            &events::ReplayMessage {
+                json: r#"{"role":"user","content":"first prompt"}"#.into(),
+            },
+        );
+        // Duplicate consecutive user prompt is deduped.
+        r.handle(
+            &hub,
+            &events::ReplayMessage {
+                json: r#"{"role":"user","content":"first prompt"}"#.into(),
+            },
+        );
+        // Assistant message is ignored.
+        r.handle(
+            &hub,
+            &events::ReplayMessage {
+                json: r#"{"role":"assistant","content":[{"type":"text","text":"answer"}]}"#.into(),
+            },
+        );
+        // User tool_result array message is ignored.
+        r.handle(
+            &hub,
+            &events::ReplayMessage {
+                json: r#"{"role":"user","content":[{"type":"tool_result","tool_use_id":"1","content":"ok"}]}"#.into(),
+            },
+        );
+        r.handle(
+            &hub,
+            &events::ReplayMessage {
+                json: r#"{"role":"user","content":"second prompt"}"#.into(),
+            },
+        );
+
+        assert_eq!(r.history, vec!["first prompt", "second prompt"]);
+        assert_eq!(r.hist_idx, 2);
+    }
 }
 
 // --- raw mode ---------------------------------------------------------------
@@ -690,9 +751,9 @@ mod sigint_tests {
     fn mid_turn_ctrl_c_swaps_handlers_and_back() {
         install_sigint_restore();
         install_sigint_exit_handler();
-        assert_eq!(sigint_handler(), on_sigint_exit as usize);
+        assert_eq!(sigint_handler(), on_sigint_exit as *const () as usize);
         install_sigint_restore();
-        assert_eq!(sigint_handler(), on_sigint_quit as usize);
+        assert_eq!(sigint_handler(), on_sigint_quit as *const () as usize);
     }
 
     fn sigint_handler() -> usize {

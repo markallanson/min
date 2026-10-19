@@ -232,7 +232,6 @@ dependencies = [
  "min-llm",
  "min-repl",
  "min-session",
- "min-session-log",
  "min-subagents",
  "min-tools-clock",
  "min-tools-fs",
@@ -284,17 +283,11 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "min-core",
+ "serde_json",
 ]
 
 [[package]]
 name = "min-session"
-version = "0.1.0"
-dependencies = [
- "min-core",
-]
-
-[[package]]
-name = "min-session-log"
 version = "0.1.0"
 dependencies = [
  "min-core",

@@ -9,7 +9,7 @@
 //!
 //! - **parenting** — `min --parent-session <id>` (min-session) makes the
 //!   child's first session a child of this process's session, so the
-//!   subagent's log (min-session-log) files under its parent's;
+//!   subagent's `.jsonl` file (min-session) records its parent;
 //! - **the instruction** — the child's repl reads non-tty stdin line by
 //!   line (`echo 'hello' | min`): one instruction line becomes one turn,
 //!   and EOF after it quits cleanly — so a spawn plus a write plus a close
