@@ -54,8 +54,8 @@ fn handle(…) {
 
 | event | rendering |
 |---|---|
-| `LlmStart` | draw transient `  ⠋ thinking…` on the current line (tty only) |
-| `Thinking` | advance the transient spinner (`  ⠙ thinking…`, or `  ⠙ calling <tool>…` while tool-call JSON streams) |
+| `LlmStart` | draw transient `  ⠋ thinking…` on the current line and reset the accumulated thinking preview (tty only) |
+| `Thinking` | append `text` to the thinking buffer and advance the transient spinner (`  ⠙ thinking…`, `  ⠙ thinking: <first 50 chars>…` when reasoning text is available, or `  ⠙ calling <tool>…` while tool-call JSON streams) |
 | `AssistantDelta` | clear any transient spinner (`\r\x1b[K`), then write the chunk verbatim (streaming output) |
 | `MessageEnd` | clear any transient spinner; newline if the stream didn't end at one; re-arm the quit-style SIGINT handler |
 | `ToolStart` | `  ▸ <name> <dim brief>` |
@@ -122,7 +122,7 @@ release, the session gets to close) and ctrl-c mid-turn does not.
 
 ## What the tests pin
 
-- `waiting_indicator_formats_and_cycles_frames` and `waiting_state_tracks_llm_start_thinking_and_clear` (spinner frames, `thinking…` vs `calling <tool>…`, and state reset on `MessageEnd`).
+- `waiting_indicator_formats_and_cycles_frames`, `thinking_preview_caps_at_50_chars_and_collapses_whitespace`, and `waiting_state_tracks_llm_start_thinking_and_clear` (spinner frames, `thinking…` vs `thinking: <first 50 chars>…` vs `calling <tool>…`, and state reset on `MessageEnd`).
 - `replay_message_populates_history_ignoring_tool_results_and_duplicates`.
 - `word_start` (ctrl-w) basics, trailing-whitespace eating, boundaries.
 - `cursor_col` is 1-based and character-counted across multi-byte input.

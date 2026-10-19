@@ -28,6 +28,7 @@ pub struct Repl {
     pos: usize,    // edit cursor: byte offset into `buf`, always a char boundary
     at_line_start: bool,
     waiting: bool, // transient LLM working indicator is currently on screen
+    thinking: String, // accumulated reasoning text for the current wait
     spin_idx: usize,
     raw: Option<RawMode>,
 }
@@ -42,6 +43,7 @@ impl Repl {
             pos: 0,
             at_line_start: true,
             waiting: false,
+            thinking: String::new(),
             spin_idx: 0,
             raw: None,
         }
@@ -114,8 +116,10 @@ impl Plugin for Repl {
             return;
         }
         if event.downcast_ref::<events::LlmStart>().is_some() {
+            self.thinking.clear();
             self.show_waiting("");
         } else if let Some(e) = event.downcast_ref::<events::Thinking>() {
+            self.thinking.push_str(&e.text);
             self.show_waiting(&e.tool);
         } else if let Some(e) = event.downcast_ref::<events::AssistantDelta>() {
             self.clear_waiting();
@@ -198,7 +202,7 @@ impl Repl {
     /// line (tty only; piped output stays clean). Cleared in-place with
     /// `\r\x1b[K` before any real output is written.
     fn show_waiting(&mut self, tool: &str) {
-        let line = format_waiting(self.spin_idx, tool);
+        let line = format_waiting(self.spin_idx, &self.thinking, tool);
         self.spin_idx = self.spin_idx.wrapping_add(1);
         self.waiting = true;
         if !self.tty {
@@ -212,6 +216,7 @@ impl Repl {
     }
 
     fn clear_waiting(&mut self) {
+        self.thinking.clear();
         if !self.waiting {
             return;
         }
@@ -506,14 +511,46 @@ const PROMPT_COLS: usize = 2;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// One frame of the transient working indicator (`  ⠋ thinking…` or
-/// `  ⠙ calling edit…`).
-fn format_waiting(spin_idx: usize, tool: &str) -> String {
+/// Max characters of streamed reasoning shown in the thinking indicator.
+const THINKING_PREVIEW_CHARS: usize = 50;
+
+/// Collapse whitespace in `text` and return up to `THINKING_PREVIEW_CHARS`
+/// characters for the single-line thinking indicator.
+fn thinking_preview(text: &str) -> String {
+    let mut out = String::new();
+    let mut count = 0;
+    for word in text.split_whitespace() {
+        if !out.is_empty() {
+            if count + 1 > THINKING_PREVIEW_CHARS {
+                break;
+            }
+            out.push(' ');
+            count += 1;
+        }
+        for c in word.chars() {
+            if count >= THINKING_PREVIEW_CHARS {
+                return out;
+            }
+            out.push(c);
+            count += 1;
+        }
+    }
+    out
+}
+
+/// One frame of the transient working indicator (`  ⠋ thinking…`,
+/// `  ⠋ thinking: <first 50 chars>…`, or `  ⠙ calling edit…`).
+fn format_waiting(spin_idx: usize, thinking: &str, tool: &str) -> String {
     let frame = SPINNER[spin_idx % SPINNER.len()];
-    let label = if tool.is_empty() {
-        "thinking…".to_string()
-    } else {
+    let label = if !tool.is_empty() {
         format!("calling {tool}…")
+    } else {
+        let preview = thinking_preview(thinking);
+        if preview.is_empty() {
+            "thinking…".to_string()
+        } else {
+            format!("thinking: {preview}…")
+        }
     };
     format!("  {} {}", ansi::cyan(frame), ansi::dim(&label))
 }
@@ -526,11 +563,32 @@ mod tests {
 
     #[test]
     fn waiting_indicator_formats_and_cycles_frames() {
-        let f0 = format_waiting(0, "");
-        let f1 = format_waiting(1, "edit");
+        let f0 = format_waiting(0, "", "");
+        let f1 = format_waiting(1, "", "edit");
+        let f2 = format_waiting(2, "let's\n  check the crates", "");
         assert!(f0.contains("⠋") && f0.contains("thinking…"), "{f0}");
         assert!(f1.contains("⠙") && f1.contains("calling edit…"), "{f1}");
-        assert_eq!(format_waiting(SPINNER.len(), ""), f0);
+        assert!(
+            f2.contains("⠹") && f2.contains("thinking: let's check the crates…"),
+            "{f2}"
+        );
+        assert_eq!(format_waiting(SPINNER.len(), "", ""), f0);
+    }
+
+    #[test]
+    fn thinking_preview_caps_at_50_chars_and_collapses_whitespace() {
+        assert_eq!(thinking_preview("   \n\t  "), "");
+        let long = "12345678901234567890123456789012345678901234567890extra";
+        let p = thinking_preview(long);
+        assert_eq!(p.chars().count(), 50);
+        assert_eq!(p, &long[..50]);
+
+        let f = format_waiting(0, long, "");
+        assert!(
+            f.contains("thinking: 12345678901234567890123456789012345678901234567890…"),
+            "{f}"
+        );
+        assert!(!f.contains("extra"), "{f}");
     }
 
     #[test]
@@ -551,19 +609,29 @@ mod tests {
         );
         assert!(r.waiting);
         assert_eq!(r.spin_idx, 1);
+        assert_eq!(r.thinking, "");
 
         r.handle(
             &hub,
             &events::Thinking {
-                text: "hmm".into(),
+                text: "hmm ".into(),
+                tool: String::new(),
+            },
+        );
+        r.handle(
+            &hub,
+            &events::Thinking {
+                text: "plan".into(),
                 tool: String::new(),
             },
         );
         assert!(r.waiting);
-        assert_eq!(r.spin_idx, 2);
+        assert_eq!(r.spin_idx, 3);
+        assert_eq!(r.thinking, "hmm plan");
 
         r.handle(&hub, &events::MessageEnd {});
         assert!(!r.waiting);
+        assert_eq!(r.thinking, "");
     }
 
     #[test]
