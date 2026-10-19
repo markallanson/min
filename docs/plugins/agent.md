@@ -20,7 +20,9 @@ context-window management. This is the simplest loop that can edit code.
  │  ┌────────────────────── up to MAX_ROUNDS ────────────────────┐    │
  │  │  llm = hub.service::<min_llm::Llm>()   ── none? → Error ──▶│────┼──▶ out
  │  │  tools = hub.tools().specs()                               │    │
+ │  │  emit LlmStart {round, model, messages, tools}             │    │
  │  │  msg = llm.complete(...) ┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅ │    │
+ │  │        ├─ on thinking/tool JSON: emit Thinking             │    │
  │  │        └─ on each delta: emit AssistantDelta               │    │
  │  │  emit MessageEnd                                           │    │
  │  │  messages.push(assistant)                                  │    │
@@ -71,6 +73,8 @@ the only line of work that leaves the plugin (via the service).
 
 | event | when |
 |---|---|
+| `LlmStart` | before each `llm.complete` call — `round` (1-based), `model`, `messages` count, `tools` count |
+| `Thinking` | every non-text stream chunk from `on_thinking` — `text` (reasoning tokens) and `tool` (name of the tool call being streamed) |
 | `AssistantDelta` | every streamed text chunk, forwarded from the LLM's `on_delta` callback |
 | `MessageEnd` | after each complete assistant message |
 | `ToolStart` | before each tool runs — `name` + a one-line `brief` (`command`'s first line or `path`, capped at 80 chars) |

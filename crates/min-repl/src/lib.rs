@@ -27,6 +27,8 @@ pub struct Repl {
     buf: Vec<u8>,  // input so far; always valid UTF-8
     pos: usize,    // edit cursor: byte offset into `buf`, always a char boundary
     at_line_start: bool,
+    waiting: bool, // transient LLM working indicator is currently on screen
+    spin_idx: usize,
     raw: Option<RawMode>,
 }
 
@@ -39,6 +41,8 @@ impl Repl {
             buf: Vec::new(),
             pos: 0,
             at_line_start: true,
+            waiting: false,
+            spin_idx: 0,
             raw: None,
         }
     }
@@ -105,13 +109,20 @@ impl Plugin for Repl {
 
     fn handle(&mut self, hub: &Hub, event: &dyn Any) {
         if event.downcast_ref::<events::Quit>().is_some() {
+            self.clear_waiting();
             hub.quit();
             return;
         }
-        if let Some(e) = event.downcast_ref::<events::AssistantDelta>() {
+        if event.downcast_ref::<events::LlmStart>().is_some() {
+            self.show_waiting("");
+        } else if let Some(e) = event.downcast_ref::<events::Thinking>() {
+            self.show_waiting(&e.tool);
+        } else if let Some(e) = event.downcast_ref::<events::AssistantDelta>() {
+            self.clear_waiting();
             self.write(&e.text);
             self.at_line_start = e.text.ends_with('\n');
         } else if event.downcast_ref::<events::MessageEnd>().is_some() {
+            self.clear_waiting();
             if !self.at_line_start {
                 self.write("\n");
             }
@@ -157,12 +168,40 @@ impl Repl {
     }
 
     fn put_line(&mut self, s: &str) {
+        self.clear_waiting();
         if !self.at_line_start {
             self.write("\n");
         }
         self.write(s);
         self.write("\n");
         self.at_line_start = true;
+    }
+
+    /// Draw or advance the transient LLM progress indicator on the current
+    /// line (tty only; piped output stays clean). Cleared in-place with
+    /// `\r\x1b[K` before any real output is written.
+    fn show_waiting(&mut self, tool: &str) {
+        let line = format_waiting(self.spin_idx, tool);
+        self.spin_idx = self.spin_idx.wrapping_add(1);
+        self.waiting = true;
+        if !self.tty {
+            return;
+        }
+        if !self.at_line_start {
+            self.write("\n");
+            self.at_line_start = true;
+        }
+        self.write(&format!("\r\x1b[K{line}"));
+    }
+
+    fn clear_waiting(&mut self) {
+        if !self.waiting {
+            return;
+        }
+        self.waiting = false;
+        if self.tty {
+            self.write("\r\x1b[K");
+        }
     }
 
     fn prompt(&self) {
@@ -448,11 +487,67 @@ fn word_start(buf: &[u8], pos: usize) -> usize {
 /// Width in columns of the "❯ " prompt (glyph + trailing space).
 const PROMPT_COLS: usize = 2;
 
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// One frame of the transient working indicator (`  ⠋ thinking…` or
+/// `  ⠙ calling edit…`).
+fn format_waiting(spin_idx: usize, tool: &str) -> String {
+    let frame = SPINNER[spin_idx % SPINNER.len()];
+    let label = if tool.is_empty() {
+        "thinking…".to_string()
+    } else {
+        format!("calling {tool}…")
+    };
+    format!("  {} {}", ansi::cyan(frame), ansi::dim(&label))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // No stdin/stdout here: these exercise the pure editing helpers.
+
+    #[test]
+    fn waiting_indicator_formats_and_cycles_frames() {
+        let f0 = format_waiting(0, "");
+        let f1 = format_waiting(1, "edit");
+        assert!(f0.contains("⠋") && f0.contains("thinking…"), "{f0}");
+        assert!(f1.contains("⠙") && f1.contains("calling edit…"), "{f1}");
+        assert_eq!(format_waiting(SPINNER.len(), ""), f0);
+    }
+
+    #[test]
+    fn waiting_state_tracks_llm_start_thinking_and_clear() {
+        let mut r = Repl::new();
+        r.tty = false;
+        let hub = Hub::new(vec![]);
+
+        assert!(!r.waiting);
+        r.handle(
+            &hub,
+            &events::LlmStart {
+                round: 1,
+                model: "m".into(),
+                messages: 1,
+                tools: 0,
+            },
+        );
+        assert!(r.waiting);
+        assert_eq!(r.spin_idx, 1);
+
+        r.handle(
+            &hub,
+            &events::Thinking {
+                text: "hmm".into(),
+                tool: String::new(),
+            },
+        );
+        assert!(r.waiting);
+        assert_eq!(r.spin_idx, 2);
+
+        r.handle(&hub, &events::MessageEnd {});
+        assert!(!r.waiting);
+    }
 
     #[test]
     fn word_start_basic() {

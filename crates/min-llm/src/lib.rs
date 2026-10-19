@@ -129,7 +129,9 @@ impl Llm {
 
     /// Stream one completion. `messages` are Anthropic-style; `tools` are
     /// `[{"name","description","input_schema"}]`; `on_delta` receives text as
-    /// it arrives; `on_status` receives human-readable retry progress.
+    /// it arrives; `on_thinking` receives `(reasoning_text, tool_name)` when
+    /// the model streams non-text work (reasoning tokens or tool-call JSON);
+    /// `on_status` receives human-readable retry progress.
     /// Returns the normalized message (see crate docs).
     pub fn complete(
         &self,
@@ -137,6 +139,7 @@ impl Llm {
         messages: &[Value],
         tools: &[Value],
         on_delta: &mut dyn FnMut(&str),
+        on_thinking: &mut dyn FnMut(&str, &str),
         on_status: &mut dyn FnMut(&str),
     ) -> Result<Value, String> {
         if let Some(problem) = self.auth.problem() {
@@ -151,7 +154,7 @@ impl Llm {
                 streamed = true;
                 on_delta(t);
             };
-            let fail = match self.try_once(&body, &mut delta) {
+            let fail = match self.try_once(&body, &mut delta, on_thinking) {
                 Ok(v) => return Ok(v),
                 Err(f) => f,
             };
@@ -245,7 +248,12 @@ impl Llm {
         }
     }
 
-    fn try_once(&self, body: &Value, on_delta: &mut dyn FnMut(&str)) -> Result<Value, Fail> {
+    fn try_once(
+        &self,
+        body: &Value,
+        on_delta: &mut dyn FnMut(&str),
+        on_thinking: &mut dyn FnMut(&str, &str),
+    ) -> Result<Value, Fail> {
         let base = self.base();
         let url = match self.api {
             "openai" | "vertex" => format!("{base}/chat/completions"),
@@ -286,8 +294,8 @@ impl Llm {
             }
             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
             match self.api {
-                "openai" | "vertex" => self.parse_openai_chunk(&v, &mut blocks, on_delta).map_err(Fail::Stream)?,
-                _ => self.parse_anthropic_chunk(&v, &mut blocks, on_delta).map_err(Fail::Stream)?,
+                "openai" | "vertex" => parse_openai_chunk(&v, &mut blocks, on_delta, on_thinking).map_err(Fail::Stream)?,
+                _ => parse_anthropic_chunk(&v, &mut blocks, on_delta, on_thinking).map_err(Fail::Stream)?,
             }
             if blocks.done {
                 break;
@@ -295,96 +303,118 @@ impl Llm {
         }
         Ok(blocks.finish())
     }
+}
 
-    fn parse_anthropic_chunk(
-        &self,
-        v: &Value,
-        b: &mut Blocks,
-        on_delta: &mut dyn FnMut(&str),
-    ) -> Result<(), String> {
-        match v["type"].as_str().unwrap_or_default() {
-            "content_block_start" => match v["content_block"]["type"].as_str().unwrap_or_default() {
-                "text" => b.push_text(),
-                "tool_use" => b.push_tool(
-                    v["content_block"]["id"].as_str().unwrap_or_default(),
-                    v["content_block"]["name"].as_str().unwrap_or_default(),
-                ),
-                _ => {}
-            },
-            "content_block_delta" => match v["delta"]["type"].as_str().unwrap_or_default() {
-                "text_delta" => {
-                    let t = v["delta"]["text"].as_str().unwrap_or_default();
-                    b.append_text(t);
-                    on_delta(t);
-                }
-                "input_json_delta" => {
-                    b.append_json(v["delta"]["partial_json"].as_str().unwrap_or_default());
-                }
-                _ => {}
-            },
-            "message_delta" => {
-                b.stop_reason = v["delta"]["stop_reason"].as_str().unwrap_or_default().to_string();
-            }
-            "message_stop" => b.done = true,
-            "error" => {
-                return Err(v["error"]["message"].as_str().unwrap_or("stream error").to_string())
+fn parse_anthropic_chunk(
+    v: &Value,
+    b: &mut Blocks,
+    on_delta: &mut dyn FnMut(&str),
+    on_thinking: &mut dyn FnMut(&str, &str),
+) -> Result<(), String> {
+    match v["type"].as_str().unwrap_or_default() {
+        "content_block_start" => match v["content_block"]["type"].as_str().unwrap_or_default() {
+            "text" => b.push_text(),
+            "thinking" | "redacted_thinking" => on_thinking("", ""),
+            "tool_use" => {
+                let id = v["content_block"]["id"].as_str().unwrap_or_default();
+                let name = v["content_block"]["name"].as_str().unwrap_or_default();
+                b.push_tool(id, name);
+                on_thinking("", name);
             }
             _ => {}
-        }
-        Ok(())
-    }
-
-    fn parse_openai_chunk(
-        &self,
-        v: &Value,
-        b: &mut Blocks,
-        on_delta: &mut dyn FnMut(&str),
-    ) -> Result<(), String> {
-        if let Some(err) = v["error"]["message"].as_str() {
-            return Err(err.to_string());
-        }
-        let Some(choice) = v["choices"].get(0) else {
-            return Ok(());
-        };
-        let delta = &choice["delta"];
-        if let Some(t) = delta["content"].as_str() {
-            if !t.is_empty() {
+        },
+        "content_block_delta" => match v["delta"]["type"].as_str().unwrap_or_default() {
+            "text_delta" => {
+                let t = v["delta"]["text"].as_str().unwrap_or_default();
                 b.append_text(t);
                 on_delta(t);
             }
-        }
-        if let Some(calls) = delta["tool_calls"].as_array() {
-            for call in calls {
-                let idx = call["index"].as_u64().unwrap_or(0) as usize;
-                let id = call["id"].as_str().unwrap_or_default();
-                let name = call["function"]["name"].as_str().unwrap_or_default();
-                b.tool_entry(idx, id, name);
-                // Gemini's thought signature — must be echoed back with the call.
-                if call.get("extra_content").is_some() {
-                    b.tools[idx].3 = call["extra_content"].clone();
-                }
-                if let Some(args) = call["function"]["arguments"].as_str() {
-                    b.append_json_at(idx, args);
-                }
+            "thinking_delta" => {
+                let t = v["delta"]["thinking"].as_str().unwrap_or_default();
+                on_thinking(t, "");
             }
-        }
-        match choice["finish_reason"].as_str() {
-            Some("stop") => {
-                b.stop_reason = "end_turn".into();
-                b.done = true;
+            "signature_delta" => {
+                on_thinking("", "");
             }
-            Some("tool_calls") | Some("function_call") => {
-                b.stop_reason = "tool_use".into();
-                b.done = true;
-            }
-            Some("length") => {
-                b.stop_reason = "max_tokens".into();
-                b.done = true;
+            "input_json_delta" => {
+                b.append_json(v["delta"]["partial_json"].as_str().unwrap_or_default());
+                let tool = b.tools.last().map(|t| t.1.as_str()).unwrap_or_default();
+                on_thinking("", tool);
             }
             _ => {}
+        },
+        "message_delta" => {
+            b.stop_reason = v["delta"]["stop_reason"].as_str().unwrap_or_default().to_string();
         }
-        Ok(())
+        "message_stop" => b.done = true,
+        "error" => {
+            return Err(v["error"]["message"].as_str().unwrap_or("stream error").to_string())
+        }
+        _ => {}
     }
+    Ok(())
+}
+
+fn parse_openai_chunk(
+    v: &Value,
+    b: &mut Blocks,
+    on_delta: &mut dyn FnMut(&str),
+    on_thinking: &mut dyn FnMut(&str, &str),
+) -> Result<(), String> {
+    if let Some(err) = v["error"]["message"].as_str() {
+        return Err(err.to_string());
+    }
+    let Some(choice) = v["choices"].get(0) else {
+        return Ok(());
+    };
+    let delta = &choice["delta"];
+    if let Some(t) = delta["reasoning_content"]
+        .as_str()
+        .or_else(|| delta["reasoning"].as_str())
+    {
+        if !t.is_empty() {
+            on_thinking(t, "");
+        }
+    }
+    if let Some(t) = delta["content"].as_str() {
+        if !t.is_empty() {
+            b.append_text(t);
+            on_delta(t);
+        }
+    }
+    if let Some(calls) = delta["tool_calls"].as_array() {
+        for call in calls {
+            let idx = call["index"].as_u64().unwrap_or(0) as usize;
+            let id = call["id"].as_str().unwrap_or_default();
+            let name = call["function"]["name"].as_str().unwrap_or_default();
+            b.tool_entry(idx, id, name);
+            // Gemini's thought signature — must be echoed back with the call.
+            if call.get("extra_content").is_some() {
+                b.tools[idx].3 = call["extra_content"].clone();
+            }
+            if let Some(args) = call["function"]["arguments"].as_str() {
+                b.append_json_at(idx, args);
+            }
+            let tool = b.tools[idx].1.as_str();
+            on_thinking("", tool);
+        }
+    }
+    match choice["finish_reason"].as_str() {
+        Some("stop") => {
+            b.stop_reason = "end_turn".into();
+            b.done = true;
+        }
+        Some("tool_calls") | Some("function_call") => {
+            b.stop_reason = "tool_use".into();
+            b.done = true;
+        }
+        Some("length") => {
+            b.stop_reason = "max_tokens".into();
+            b.done = true;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// `MIN_API` selectors: a wire dialect or an alias for a well-known
@@ -752,5 +782,64 @@ mod tests {
         let wire = to_openai_messages(&results);
         assert_eq!(wire[0]["role"], "tool");
         assert_eq!(wire[0]["tool_call_id"], "t9");
+    }
+
+    #[test]
+    fn anthropic_chunks_report_thinking_and_tool_streaming() {
+        let mut b = Blocks::default();
+        let mut deltas = Vec::new();
+        let mut thoughts: Vec<(String, String)> = Vec::new();
+        let mut run = |v: Value| {
+            parse_anthropic_chunk(
+                &v,
+                &mut b,
+                &mut |t| deltas.push(t.to_string()),
+                &mut |text, tool| thoughts.push((text.to_string(), tool.to_string())),
+            )
+            .unwrap();
+        };
+        run(json!({"type": "content_block_start", "content_block": {"type": "thinking"}}));
+        run(json!({"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "plan"}}));
+        run(json!({"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1", "name": "edit"}}));
+        run(json!({"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": "{\"path\":\"a\"}"}}));
+        assert!(deltas.is_empty());
+        assert_eq!(
+            thoughts,
+            vec![
+                ("".into(), "".into()),
+                ("plan".into(), "".into()),
+                ("".into(), "edit".into()),
+                ("".into(), "edit".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn openai_chunks_report_reasoning_and_tool_streaming() {
+        let mut b = Blocks::default();
+        let mut deltas = Vec::new();
+        let mut thoughts: Vec<(String, String)> = Vec::new();
+        let mut run = |v: Value| {
+            parse_openai_chunk(
+                &v,
+                &mut b,
+                &mut |t| deltas.push(t.to_string()),
+                &mut |text, tool| thoughts.push((text.to_string(), tool.to_string())),
+            )
+            .unwrap();
+        };
+        run(json!({"choices": [{"delta": {"reasoning_content": "step 1"}}]}));
+        run(json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "bash", "arguments": "{\"c"}}]}}]}));
+        // Subsequent argument chunks omit the function name, but the callback still carries it.
+        run(json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "md\":\"ls\"}"}}]}}]}));
+        assert!(deltas.is_empty());
+        assert_eq!(
+            thoughts,
+            vec![
+                ("step 1".into(), "".into()),
+                ("".into(), "bash".into()),
+                ("".into(), "bash".into()),
+            ]
+        );
     }
 }

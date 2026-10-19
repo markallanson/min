@@ -154,6 +154,8 @@ The catalogue — pure data, no behaviour:
 | event | direction | payload |
 |---|---|---|
 | `UserInput` | repl → agent | `text` |
+| `LlmStart` | agent → everyone | `round`, `model`, `messages`, `tools` — a completion round is starting |
+| `Thinking` | agent → everyone | `text`, `tool` — streamed reasoning chunk or tool-call JSON in flight |
 | `AssistantDelta` | agent → repl | streamed text chunk |
 | `MessageEnd` | agent → repl | (none) |
 | `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note, first lines of the result as `preview` |
@@ -223,8 +225,10 @@ Load order: `repl, llm, fs, shell, clock, agent`.
      │                                                    │  push user msg
      │                                                    │  service::<Llm>() ✓
      │                                                    │  tools().specs()
+     │◀──── LlmStart {round: 1, …} ───────────────────────│
+     │ shows "⠋ thinking…"                                │
      │◀──── AssistantDelta("Let me check…") ──────────────│  llm.complete() ┅
-     │ prints chunk                                       │
+     │ clears indicator, prints chunk                     │
      │◀──── MessageEnd ───────────────────────────────────│  stream done
      │                                                    │  tool_use: clock {}
      │◀──── ToolStart {clock} ────────────────────────────│

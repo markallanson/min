@@ -105,7 +105,8 @@ Application Default Credentials instead of a key (`src/google.rs`):
  read SSE lines ── data: {"type":"content_block_delta", …}  (anthropic)
                     data: {"choices":[{"delta":{…}}]}       (openai)
       │                │
-      │                └─ text deltas → Blocks + on_delta(t)   ──▶ repl, live
+      │                ├─ thinking / tool JSON → on_thinking(text, tool) ──▶ repl spinner
+      │                └─ text deltas → Blocks + on_delta(t)             ──▶ repl, live
       ▼
  Blocks.finish() ──▶ normalized Anthropic-style Value (see top)
 ```
@@ -173,6 +174,9 @@ attempt 1 → 429 code 1113 → is_plan_mismatch ✓
 
 - `Blocks` normalization: partial `input_json_delta` fragments assemble into
   a parsed tool `input`.
+- `on_thinking` callbacks fire for Anthropic `thinking`/`tool_use`/`input_json_delta`
+  chunks and OpenAI `reasoning_content`/`tool_calls` chunks (carrying the tool name
+  across subsequent argument fragments).
 - Plan-mismatch 429s are not retryable; genuine 429/5xx/transport errors
   are; 401 and mid-stream errors are not.
 - `mirror_base` is bidirectional for the two coding portals and `None` for

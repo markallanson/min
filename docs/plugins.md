@@ -180,6 +180,8 @@ plugins never import each other:
 | event | direction | payload |
 |---|---|---|
 | `UserInput` | repl → agent | `text` |
+| `LlmStart` | agent → everyone | `round`, `model`, `messages`, `tools` — a completion round is starting |
+| `Thinking` | agent → everyone | `text`, `tool` — streamed reasoning chunk or tool-call JSON in flight |
 | `AssistantDelta` | agent → repl | streamed text chunk |
 | `MessageEnd` | agent → repl | (none) |
 | `ToolStart` / `ToolEnd` | agent → repl | tool name + brief / ok, secs, note, first lines of the result as `preview` |

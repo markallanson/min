@@ -75,7 +75,7 @@ impl AgentPlugin {
             system.push_str(&format!("\n\n# {title}\n\n{body}"));
         }
         self.messages.push(json!({"role": "user", "content": user_text}));
-        for _ in 0..MAX_ROUNDS {
+        for round in 1..=MAX_ROUNDS {
             let Some(llm) = hub.service::<min_llm::Llm>() else {
                 hub.emit(events::Error {
                     text: "no LLM service — is the llm plugin loaded?".into(),
@@ -92,13 +92,32 @@ impl AgentPlugin {
                     v
                 })
                 .collect();
+            hub.emit(events::LlmStart {
+                round,
+                model: llm.model.clone(),
+                messages: self.messages.len(),
+                tools: tools.len(),
+            });
             let mut on_delta = |t: &str| {
                 hub.emit(events::AssistantDelta { text: t.to_string() });
+            };
+            let mut on_thinking = |text: &str, tool: &str| {
+                hub.emit(events::Thinking {
+                    text: text.to_string(),
+                    tool: tool.to_string(),
+                });
             };
             let mut on_status = |s: &str| {
                 hub.emit(events::Info { text: s.to_string() });
             };
-            let message = match llm.complete(&system, &self.messages, &tools, &mut on_delta, &mut on_status) {
+            let message = match llm.complete(
+                &system,
+                &self.messages,
+                &tools,
+                &mut on_delta,
+                &mut on_thinking,
+                &mut on_status,
+            ) {
                 Ok(m) => m,
                 Err(e) => {
                     hub.emit(events::Error { text: e });

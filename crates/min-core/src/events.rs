@@ -10,6 +10,28 @@ pub struct UserInput {
     pub text: String,
 }
 
+/// The agent is about to call the LLM for one completion round (agent → everyone).
+pub struct LlmStart {
+    /// 1-based round index within the current turn (1 on the user's prompt,
+    /// 2+ after tool results are fed back).
+    pub round: usize,
+    /// Model identifier configured on the LLM service.
+    pub model: String,
+    /// Number of conversation messages sent in the request.
+    pub messages: usize,
+    /// Number of tool specifications offered to the model.
+    pub tools: usize,
+}
+
+/// The model is working on non-text output — streaming reasoning tokens or
+/// assembling a tool call's JSON arguments (llm/agent → everyone).
+pub struct Thinking {
+    /// Streamed reasoning/thinking text chunk, if any.
+    pub text: String,
+    /// Name of the tool being assembled, when streaming a tool call.
+    pub tool: String,
+}
+
 /// A chunk of assistant text arrived while streaming (llm/agent → repl).
 pub struct AssistantDelta {
     pub text: String,

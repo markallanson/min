@@ -54,13 +54,15 @@ fn handle(…) {
 
 | event | rendering |
 |---|---|
-| `AssistantDelta` | write the chunk verbatim (streaming output) |
-| `MessageEnd` | newline if the stream didn't end at one; re-arm the quit-style SIGINT handler |
+| `LlmStart` | draw transient `  ⠋ thinking…` on the current line (tty only) |
+| `Thinking` | advance the transient spinner (`  ⠙ thinking…`, or `  ⠙ calling <tool>…` while tool-call JSON streams) |
+| `AssistantDelta` | clear any transient spinner (`\r\x1b[K`), then write the chunk verbatim (streaming output) |
+| `MessageEnd` | clear any transient spinner; newline if the stream didn't end at one; re-arm the quit-style SIGINT handler |
 | `ToolStart` | `  ▸ <name> <dim brief>` |
 | `ToolEnd` | `  ✓ <secs>` on success; `  ✗ <secs> <note>` plus dimmed `preview` lines on failure |
 | `Info` | dim line |
 | `Error` | `⚠ <text>` in red |
-| `Quit` | `hub.quit()` — stops the loop after this event finishes propagating |
+| `Quit` | clear any transient spinner; `hub.quit()` — stops the loop after this event finishes propagating |
 
 **Emits:**
 
@@ -118,6 +120,7 @@ release, the session gets to close) and ctrl-c mid-turn does not.
 
 ## What the tests pin
 
+- `waiting_indicator_formats_and_cycles_frames` and `waiting_state_tracks_llm_start_thinking_and_clear` (spinner frames, `thinking…` vs `calling <tool>…`, and state reset on `MessageEnd`).
 - `word_start` (ctrl-w) basics, trailing-whitespace eating, boundaries.
 - `cursor_col` is 1-based and character-counted across multi-byte input.
 - The SIGINT handler swap: mid-turn installs the exit handler, `MessageEnd`
