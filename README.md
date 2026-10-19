@@ -25,6 +25,17 @@ export MIN_API=zai MIN_API_KEY=<your z.ai key>
 min
 ```
 
+Gemini on Vertex AI, authenticated with Google Application Default
+Credentials (no API key — `gcloud auth application-default login`, a
+service-account key in `GOOGLE_APPLICATION_CREDENTIALS`, or the metadata
+server on GCP):
+
+```sh
+export MIN_API=vertex GOOGLE_CLOUD_PROJECT=<project>   # model defaults to google/gemini-2.5-pro
+export GOOGLE_CLOUD_LOCATION=europe-west1              # optional, default global
+min
+```
+
 Any other OpenAI-compatible endpoint (OpenRouter, vLLM, …):
 
 ```sh
@@ -36,11 +47,13 @@ export MIN_MODEL=<model>                           # whatever it serves
 
 | env var | default | meaning |
 |---|---|---|
-| `MIN_API` | `anthropic` | `anthropic` · `openai` · `zai` (Z.ai coding plan) · `openrouter` — an alias sets dialect + base URL + default model |
+| `MIN_API` | `anthropic` | `anthropic` · `openai` · `zai` (Z.ai coding plan) · `openrouter` · `vertex` (Gemini on Vertex AI) — an alias sets dialect + base URL + default model |
 | `MIN_BASE_URL` | `https://api.anthropic.com` | API base URL (overrides the alias's choice) |
 | `MIN_MODEL` | `claude-sonnet-4-5` | model name (overrides the alias's choice) |
 | `MIN_MAX_TOKENS` | `16384` | max output tokens |
 | `ANTHROPIC_API_KEY` / `MIN_API_KEY` / `OPENAI_API_KEY` | — | API key |
+| `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` | ADC's project / `global` | Vertex project and region (`MIN_API=vertex`) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | gcloud's ADC file | Google credentials (`MIN_API=vertex`) |
 | `HTTPS_PROXY`, `NO_COLOR` | — | honoured as usual |
 
 ```sh

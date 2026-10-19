@@ -157,6 +157,30 @@ fn registers_at_start_reports_lifecycle_then_releases() {
 }
 
 #[test]
+fn without_bin_path_uses_herdr_on_path() {
+    // herdr 0.8 panes export HERDR_ENV / HERDR_PANE_ID / HERDR_SOCKET_PATH
+    // but not HERDR_BIN_PATH; reporting must still happen, via PATH.
+    let _guard = ENV_LOCK.lock().unwrap();
+    clear_herdr_env();
+    let fake = install_fake_herdr("path");
+    set_herdr_env(&fake);
+    std::env::remove_var("HERDR_BIN_PATH");
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![fake.dir.clone()];
+    dirs.extend(std::env::split_paths(&path));
+    std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
+
+    min_core::run(harness());
+
+    std::env::set_var("PATH", path);
+    clear_herdr_env();
+    let log = std::fs::read_to_string(&fake.log).expect("herdr on PATH was invoked");
+    assert_eq!(log.lines().count(), 6);
+    assert_eq!(log.lines().last(), Some(RELEASE_LINE));
+    let _ = std::fs::remove_dir_all(&fake.dir);
+}
+
+#[test]
 fn a_broken_herdr_bin_never_disturbs_the_run() {
     let _guard = ENV_LOCK.lock().unwrap();
     clear_herdr_env();

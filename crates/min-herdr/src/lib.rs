@@ -1,8 +1,9 @@
 //! min-herdr — report min's agent state to [Herdr](https://github.com/herdrdev/herdr).
 //!
-//! A Herdr pane exports `HERDR_ENV`, `HERDR_PANE_ID`, `HERDR_BIN_PATH` and
-//! `HERDR_SOCKET_PATH`. When all are present, this plugin reports min's
-//! lifecycle state through Herdr's CLI ("integrate your own agent"):
+//! A Herdr pane exports `HERDR_ENV`, `HERDR_PANE_ID` and `HERDR_SOCKET_PATH`
+//! (and, in some versions, `HERDR_BIN_PATH`). When those are present, this
+//! plugin reports min's lifecycle state through Herdr's CLI ("integrate your
+//! own agent") — `$HERDR_BIN_PATH`, else `herdr` on `PATH`:
 //!
 //! ```text
 //! "$HERDR_BIN_PATH" pane report-agent "$HERDR_PANE_ID" \
@@ -70,7 +71,7 @@ pub struct HerdrPlugin {
 }
 
 struct Config {
-    /// `$HERDR_BIN_PATH` — the herdr CLI used for all reports.
+    /// The herdr CLI used for all reports — `$HERDR_BIN_PATH`, else `herdr`.
     bin: String,
     /// `$HERDR_PANE_ID` — the pane whose state we report.
     pane: String,
@@ -83,11 +84,14 @@ impl HerdrPlugin {
 
     /// True when running inside a Herdr pane. The docs require gating on
     /// `HERDR_ENV=1` *and* the presence of the variables actually used, so
-    /// the integration is a no-op everywhere else.
+    /// the integration is a no-op everywhere else. `HERDR_BIN_PATH` is not
+    /// required: herdr 0.8 panes don't export it (see [`herdr_bin`]).
+    /// `HERDR_SOCKET_PATH` is — the spawned CLI inherits it to find the
+    /// right Herdr session.
     fn enabled() -> bool {
         std::env::var("HERDR_ENV").as_deref() == Ok("1")
-            && env_nonempty("HERDR_BIN_PATH")
             && env_nonempty("HERDR_PANE_ID")
+            && env_nonempty("HERDR_SOCKET_PATH")
     }
 
     /// Spawn the herdr CLI with a `report-agent` for `state`. A failed
@@ -108,6 +112,12 @@ impl HerdrPlugin {
         let argv = release_args(cfg);
         let _ = Command::new(&argv[0]).args(&argv[1..]).output();
     }
+}
+
+/// The herdr CLI to spawn: `$HERDR_BIN_PATH` when the pane exports it,
+/// else `herdr` resolved on `PATH`.
+fn herdr_bin(bin_path: Option<String>) -> String {
+    bin_path.filter(|b| !b.is_empty()).unwrap_or_else(|| "herdr".into())
 }
 
 fn env_nonempty(key: &str) -> bool {
@@ -186,7 +196,7 @@ impl Plugin for HerdrPlugin {
     fn start(&mut self, _hub: &Hub) {
         if Self::enabled() {
             self.cfg = Some(Config {
-                bin: std::env::var("HERDR_BIN_PATH").unwrap_or_default(),
+                bin: herdr_bin(std::env::var("HERDR_BIN_PATH").ok()),
                 pane: std::env::var("HERDR_PANE_ID").unwrap_or_default(),
             });
             // Register at once, not at the first message: Herdr only tracks
@@ -377,6 +387,13 @@ mod tests {
         p.session = Some("1729180001-k3f9".into());
         p.handle(&Hub::new(vec![]), &events::SessionEnd { id: "1729180001-k3f9".into() });
         assert!(p.session.is_none());
+    }
+
+    #[test]
+    fn bin_falls_back_to_herdr_on_path() {
+        assert_eq!(herdr_bin(Some("/opt/herdr".into())), "/opt/herdr");
+        assert_eq!(herdr_bin(Some(String::new())), "herdr");
+        assert_eq!(herdr_bin(None), "herdr");
     }
 
     #[test]

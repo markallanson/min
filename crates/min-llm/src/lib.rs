@@ -23,7 +23,8 @@
 //!
 //! Environment:
 //! - `MIN_API`            dialect or endpoint alias: `"anthropic"` (default),
-//!                        `"openai"`, `"zai"` (Z.ai coding plan), `"openrouter"`
+//!                        `"openai"`, `"zai"` (Z.ai coding plan), `"openrouter"`,
+//!                        `"vertex"` (Gemini on Vertex AI, Google ADC auth)
 //! - `MIN_BASE_URL`       overrides the endpoint an alias picks (default
 //!                        `https://api.anthropic.com`)
 //! - `MIN_MODEL`          overrides the model an alias picks
@@ -31,6 +32,9 @@
 //! - `MIN_MAX_TOKENS`     default `16384`
 //! - `ANTHROPIC_API_KEY`  key for the anthropic dialect
 //! - `MIN_API_KEY` / `OPENAI_API_KEY` / `ZAI_API_KEY`  keys for openai-style endpoints
+//! - `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION`  Vertex project and
+//!                        region (default `global`); credentials come from
+//!                        Application Default Credentials (see [`google`])
 //! - `HTTPS_PROXY`        optional outbound proxy
 
 use min_core::{events, Hub, Plugin};
@@ -38,6 +42,8 @@ use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
 use std::io::{BufRead, BufReader, Read};
 use std::time::Duration;
+
+mod google;
 
 /// The plugin: publishes the [`Llm`] service and greets the user.
 pub struct LlmPlugin;
@@ -49,10 +55,8 @@ impl Plugin for LlmPlugin {
 
     fn start(&mut self, hub: &Hub) {
         let llm = Llm::from_env();
-        if llm.api_key.is_empty() {
-            hub.emit(events::Info {
-                text: "warning: no API key set (ANTHROPIC_API_KEY, MIN_API_KEY/OPENAI_API_KEY, or ZAI_API_KEY for MIN_API=zai)".into(),
-            });
+        if let Some(problem) = llm.auth.problem() {
+            hub.emit(events::Info { text: format!("warning: {problem}") });
         }
         let host = llm.base().split("//").nth(1).unwrap_or_default().to_string();
         hub.emit(events::Info {
@@ -71,7 +75,7 @@ pub struct Llm {
     mirror: Option<&'static str>,
     /// Set once the mirror has been tried (successfully or not).
     mirrored: Cell<bool>,
-    api_key: String,
+    auth: Auth,
     pub model: String,
     max_tokens: u64,
 }
@@ -95,10 +99,15 @@ impl Llm {
         if spec == "zai" {
             key_names.push("ZAI_API_KEY");
         }
+        let mut auth = Auth::Key(first_env(&key_names));
+        let mut base_default = base_default.to_string();
+        if api == "vertex" {
+            (auth, base_default) = vertex_setup();
+        }
         let base = std::env::var("MIN_BASE_URL").unwrap_or_default();
         let base = {
             let b = base.trim_end_matches('/');
-            if b.is_empty() { base_default.to_string() } else { b.to_string() }
+            if b.is_empty() { base_default } else { b.to_string() }
         };
         let mirror = mirror_base(&base);
         let model = std::env::var("MIN_MODEL").unwrap_or_default();
@@ -109,7 +118,7 @@ impl Llm {
             base: RefCell::new(base),
             mirror,
             mirrored: Cell::new(false),
-            api_key: first_env(&key_names),
+            auth,
             model,
             max_tokens: std::env::var("MIN_MAX_TOKENS")
                 .ok()
@@ -130,8 +139,8 @@ impl Llm {
         on_delta: &mut dyn FnMut(&str),
         on_status: &mut dyn FnMut(&str),
     ) -> Result<Value, String> {
-        if self.api_key.is_empty() {
-            return Err("no API key set for the LLM (see MIN_API / ANTHROPIC_API_KEY / MIN_API_KEY)".into());
+        if let Some(problem) = self.auth.problem() {
+            return Err(problem);
         }
         let body = self.build_body(system, messages, tools);
         const SCHEDULE: [u64; 6] = [1, 2, 4, 8, 16, 32];
@@ -195,7 +204,7 @@ impl Llm {
 
     fn build_body(&self, system: &str, messages: &[Value], tools: &[Value]) -> Value {
         match self.api {
-            "openai" => {
+            "openai" | "vertex" => {
                 let mut wire: Vec<Value> = vec![json!({"role": "system", "content": system})];
                 for m in messages {
                     wire.extend(to_openai_messages(m));
@@ -210,7 +219,11 @@ impl Llm {
                         }})
                     })
                     .collect();
-                json!({"model": self.model, "max_tokens": self.max_tokens, "messages": wire, "tools": fns, "stream": true})
+                let mut body = json!({"model": self.model, "max_tokens": self.max_tokens, "messages": wire, "stream": true});
+                if !fns.is_empty() {
+                    body["tools"] = Value::Array(fns);
+                }
+                body
             }
             _ => json!({
                 "model": self.model, "max_tokens": self.max_tokens,
@@ -226,26 +239,31 @@ impl Llm {
 
     /// First/last few chars of the key, so errors show *which* key was used.
     fn key_hint(&self) -> String {
-        let k = self.api_key.as_bytes();
-        if k.len() > 12 && self.api_key.is_ascii() {
-            format!("{}…{}", &self.api_key[..6], &self.api_key[self.api_key.len() - 4..])
-        } else {
-            "redacted".into()
+        match &self.auth {
+            Auth::Key(k) if k.len() > 12 && k.is_ascii() => format!("{}…{}", &k[..6], &k[k.len() - 4..]),
+            _ => "redacted".into(),
         }
     }
 
     fn try_once(&self, body: &Value, on_delta: &mut dyn FnMut(&str)) -> Result<Value, Fail> {
         let base = self.base();
         let url = match self.api {
-            "openai" => format!("{base}/chat/completions"),
+            "openai" | "vertex" => format!("{base}/chat/completions"),
             _ => format!("{base}/v1/messages"),
         };
         let mut req = self.http.post(&url);
-        req = match self.api {
-            "openai" => req.set("Authorization", &format!("Bearer {}", self.api_key)),
-            _ => req
-                .set("x-api-key", &self.api_key)
-                .set("anthropic-version", "2023-06-01"),
+        req = match (&self.auth, self.api) {
+            (Auth::Google(adc), _) => {
+                let token = adc.token(&self.http).map_err(Fail::Auth)?;
+                let req = req.set("Authorization", &format!("Bearer {token}"));
+                match &adc.quota_project {
+                    Some(p) => req.set("x-goog-user-project", p),
+                    None => req,
+                }
+            }
+            (Auth::Key(k), "openai") => req.set("Authorization", &format!("Bearer {k}")),
+            (Auth::Key(k), _) => req.set("x-api-key", k).set("anthropic-version", "2023-06-01"),
+            (Auth::Unusable(e), _) => return Err(Fail::Auth(e.clone())),
         };
         let resp = match req.send_json(body.clone()) {
             Ok(r) => r,
@@ -268,7 +286,7 @@ impl Llm {
             }
             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
             match self.api {
-                "openai" => self.parse_openai_chunk(&v, &mut blocks, on_delta).map_err(Fail::Stream)?,
+                "openai" | "vertex" => self.parse_openai_chunk(&v, &mut blocks, on_delta).map_err(Fail::Stream)?,
                 _ => self.parse_anthropic_chunk(&v, &mut blocks, on_delta).map_err(Fail::Stream)?,
             }
             if blocks.done {
@@ -341,6 +359,10 @@ impl Llm {
                 let id = call["id"].as_str().unwrap_or_default();
                 let name = call["function"]["name"].as_str().unwrap_or_default();
                 b.tool_entry(idx, id, name);
+                // Gemini's thought signature — must be echoed back with the call.
+                if call.get("extra_content").is_some() {
+                    b.tools[idx].3 = call["extra_content"].clone();
+                }
                 if let Some(args) = call["function"]["arguments"].as_str() {
                     b.append_json_at(idx, args);
                 }
@@ -373,8 +395,63 @@ fn resolve_api(spec: &str) -> (&'static str, &'static str, &'static str) {
         "openai" => ("openai", "https://api.openai.com/v1", "gpt-4o"),
         "zai" => ("openai", "https://api.z.ai/api/coding/paas/v4", "glm-5.3"),
         "openrouter" => ("openai", "https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4.5"),
+        // Vertex's OpenAI-compatible endpoint; the base depends on project and
+        // region, so `vertex_setup` fills it in.
+        "vertex" | "vertexai" => ("vertex", "", "google/gemini-2.5-pro"),
         _ => ("anthropic", "https://api.anthropic.com", "claude-sonnet-4-5"),
     }
+}
+
+/// How requests authenticate.
+enum Auth {
+    /// A static API key (may be empty — reported as a problem).
+    Key(String),
+    /// Google Application Default Credentials, for Vertex AI.
+    Google(google::Adc),
+    /// Configuration that can't work, with the reason.
+    Unusable(String),
+}
+
+impl Auth {
+    /// Why requests can't be made, if they can't.
+    fn problem(&self) -> Option<String> {
+        match self {
+            Auth::Key(k) if k.is_empty() => Some(
+                "no API key set (ANTHROPIC_API_KEY, MIN_API_KEY/OPENAI_API_KEY, or ZAI_API_KEY for MIN_API=zai)".into(),
+            ),
+            Auth::Unusable(e) => Some(e.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// Load ADC and work out the Vertex endpoint: `(auth, base url)`.
+fn vertex_setup() -> (Auth, String) {
+    let adc = match google::Adc::from_env() {
+        Ok(adc) => adc,
+        Err(e) => return (Auth::Unusable(e), String::new()),
+    };
+    let project = Some(first_env(&["GOOGLE_CLOUD_PROJECT", "CLOUDSDK_CORE_PROJECT", "GCLOUD_PROJECT"]))
+        .filter(|p| !p.is_empty())
+        .or_else(|| adc.project.clone())
+        .or_else(|| adc.quota_project.clone())
+        .or_else(|| adc.on_metadata().then(google::metadata_project).flatten());
+    let Some(project) = project else {
+        let e = format!("no Google Cloud project for Vertex AI (credentials: {}) — set GOOGLE_CLOUD_PROJECT", adc.origin);
+        return (Auth::Unusable(e), String::new());
+    };
+    let location = first_env(&["GOOGLE_CLOUD_LOCATION", "GOOGLE_CLOUD_REGION"]);
+    let location = if location.is_empty() { "global".to_string() } else { location };
+    (Auth::Google(adc), vertex_base(&project, &location))
+}
+
+/// Vertex AI's OpenAI-compatible endpoint for a project and region.
+fn vertex_base(project: &str, location: &str) -> String {
+    let host = match location {
+        "global" => "aiplatform.googleapis.com".to_string(),
+        l => format!("{l}-aiplatform.googleapis.com"),
+    };
+    format!("https://{host}/v1/projects/{project}/locations/{location}/endpoints/openapi")
 }
 
 fn first_env(names: &[&str]) -> String {
@@ -410,13 +487,15 @@ enum Fail {
     Http { status: u16, body: String, retry_after: Option<u64> },
     Stream(String),
     Transport(String),
+    /// Couldn't obtain credentials — not retried.
+    Auth(String),
 }
 
 impl Fail {
     fn message(&self) -> String {
         match self {
             Fail::Http { status, body, .. } => format!("HTTP {status}: {}", body.trim()),
-            Fail::Stream(m) | Fail::Transport(m) => m.clone(),
+            Fail::Stream(m) | Fail::Transport(m) | Fail::Auth(m) => m.clone(),
         }
     }
     fn brief(&self) -> String {
@@ -425,6 +504,7 @@ impl Fail {
             Fail::Http { status, .. } => format!("HTTP {status}"),
             Fail::Transport(_) => "network error".into(),
             Fail::Stream(_) => "stream error".into(),
+            Fail::Auth(_) => "auth error".into(),
         }
     }
     fn is_retryable(&self) -> bool {
@@ -448,7 +528,7 @@ fn is_plan_mismatch(body: &str) -> bool {
 #[derive(Default)]
 struct Blocks {
     text: String,
-    tools: Vec<(String, String, String)>, // (id, name, accumulated json)
+    tools: Vec<(String, String, String, Value)>, // (id, name, accumulated json, extra_content)
     stop_reason: String,
     done: bool,
 }
@@ -456,7 +536,7 @@ struct Blocks {
 impl Blocks {
     fn push_text(&mut self) {}
     fn push_tool(&mut self, id: &str, name: &str) {
-        self.tools.push((id.into(), name.into(), String::new()));
+        self.tools.push((id.into(), name.into(), String::new(), Value::Null));
     }
     fn append_text(&mut self, t: &str) {
         self.text.push_str(t);
@@ -468,7 +548,7 @@ impl Blocks {
     }
     fn tool_entry(&mut self, idx: usize, id: &str, name: &str) {
         while self.tools.len() <= idx {
-            self.tools.push((String::new(), String::new(), String::new()));
+            self.tools.push((String::new(), String::new(), String::new(), Value::Null));
         }
         if !id.is_empty() {
             self.tools[idx].0 = id.into();
@@ -486,9 +566,15 @@ impl Blocks {
         if !self.text.is_empty() {
             content.push(json!({"type": "text", "text": self.text}));
         }
-        for (id, name, args) in &self.tools {
+        for (i, (id, name, args, extra)) in self.tools.iter().enumerate() {
             let input: Value = serde_json::from_str(args).unwrap_or_else(|_| json!({}));
-            content.push(json!({"type": "tool_use", "id": id, "name": name, "input": input}));
+            // Some endpoints (Gemini) may omit call ids; results must still pair up.
+            let id = if id.is_empty() { format!("call_{i}") } else { id.clone() };
+            let mut block = json!({"type": "tool_use", "id": id, "name": name, "input": input});
+            if !extra.is_null() {
+                block["extra_content"] = extra.clone();
+            }
+            content.push(block);
         }
         let stop = if self.stop_reason.is_empty() { "end_turn" } else { &self.stop_reason };
         json!({"stop_reason": stop, "content": content})
@@ -513,8 +599,12 @@ fn to_openai_messages(m: &Value) -> Vec<Value> {
                     .iter()
                     .filter(|b| b["type"] == "tool_use")
                     .map(|b| {
-                        json!({"id": b["id"], "type": "function",
-                               "function": {"name": b["name"], "arguments": b["input"].to_string()}})
+                        let mut call = json!({"id": b["id"], "type": "function",
+                               "function": {"name": b["name"], "arguments": b["input"].to_string()}});
+                        if let Some(extra) = b.get("extra_content") {
+                            call["extra_content"] = extra.clone();
+                        }
+                        call
                     })
                     .collect();
                 let mut msg = json!({"role": "assistant", "content": text});
@@ -548,6 +638,8 @@ fn error_body(r: ureq::Response) -> String {
             v["error"]["message"]
                 .as_str()
                 .or_else(|| v["message"].as_str())
+                // Vertex wraps errors in an array: [{"error": {…}}]
+                .or_else(|| v[0]["error"]["message"].as_str())
                 .map(String::from)
         })
         .unwrap_or(s)
@@ -614,6 +706,33 @@ mod tests {
         assert_eq!((api, base, model), ("openai", "https://api.z.ai/api/coding/paas/v4", "glm-5.3"));
         assert_eq!(resolve_api("openai").0, "openai");
         assert_eq!(resolve_api("openrouter").0, "openai");
+        assert_eq!(resolve_api("vertex"), ("vertex", "", "google/gemini-2.5-pro"));
+    }
+
+    #[test]
+    fn vertex_endpoints() {
+        assert_eq!(
+            vertex_base("p1", "global"),
+            "https://aiplatform.googleapis.com/v1/projects/p1/locations/global/endpoints/openapi"
+        );
+        assert_eq!(
+            vertex_base("p1", "europe-west4"),
+            "https://europe-west4-aiplatform.googleapis.com/v1/projects/p1/locations/europe-west4/endpoints/openapi"
+        );
+    }
+
+    #[test]
+    fn gemini_thought_signature_round_trips() {
+        let mut b = Blocks::default();
+        b.tool_entry(0, "", "bash");
+        b.tools[0].3 = json!({"google": {"thought_signature": "sig"}});
+        b.append_json_at(0, "{}");
+        let v = b.finish();
+        let block = &v["content"][0];
+        assert_eq!(block["id"], "call_0");
+        let msg = json!({"role": "assistant", "content": [block.clone()]});
+        let wire = to_openai_messages(&msg);
+        assert_eq!(wire[0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"], "sig");
     }
 
     #[test]

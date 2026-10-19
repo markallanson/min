@@ -18,17 +18,20 @@ content blocks, so the rest of min never cares which wire format is in use:
 | shape | **provider** — publishes a service; listens to nothing |
 | tools offered | none |
 | services published | `Llm` (one per process; consumed by min-agent via `hub.service::<Llm>()`) |
-| deps | `min-core`, `ureq`, `serde_json` — the largest crate, absorbing all wire-format ugliness |
+| deps | `min-core`, `ureq`, `serde_json`, `ring` + `base64` (Google service-account JWTs; already in the tree via rustls) — the largest crate, absorbing all wire-format ugliness |
 
 ## Configuration (environment)
 
 | var | default | meaning |
 |---|---|---|
-| `MIN_API` | `anthropic` | dialect or alias: `anthropic` · `openai` · `zai` (Z.ai coding plan) · `openrouter` |
+| `MIN_API` | `anthropic` | dialect or alias: `anthropic` · `openai` · `zai` (Z.ai coding plan) · `openrouter` · `vertex` |
 | `MIN_BASE_URL` | the alias's endpoint | overrides the endpoint |
 | `MIN_MODEL` | the alias's model (`claude-sonnet-4-5` etc.) | overrides the model |
 | `MIN_MAX_TOKENS` | `16384` | max output tokens |
 | keys | — | `ANTHROPIC_API_KEY` (anthropic dialect); `MIN_API_KEY` / `OPENAI_API_KEY` (openai-style); `ZAI_API_KEY` (`MIN_API=zai`) |
+| `GOOGLE_CLOUD_PROJECT` (also `CLOUDSDK_CORE_PROJECT`, `GCLOUD_PROJECT`) | the credentials' project | Vertex project (`MIN_API=vertex`) |
+| `GOOGLE_CLOUD_LOCATION` / `GOOGLE_CLOUD_REGION` | `global` | Vertex region |
+| `GOOGLE_APPLICATION_CREDENTIALS` | gcloud's well-known ADC file | Google credentials file |
 | `HTTPS_PROXY` / `https_proxy` | — | outbound proxy |
 
 An alias resolves to `(dialect, base URL, default model)`:
@@ -39,11 +42,41 @@ An alias resolves to `(dialect, base URL, default model)`:
 | `openai` | `openai` | `https://api.openai.com/v1` | `gpt-4o` |
 | `zai` | `openai` | `https://api.z.ai/api/coding/paas/v4` | `glm-5.3` |
 | `openrouter` | `openai` | `https://openrouter.ai/api/v1` | `anthropic/claude-sonnet-4.5` |
+| `vertex` / `vertexai` | `openai` wire, Google auth | `https://{region-}aiplatform.googleapis.com/v1/projects/{p}/locations/{region}/endpoints/openapi` | `google/gemini-2.5-pro` |
+
+### Vertex AI and Application Default Credentials
+
+`MIN_API=vertex` speaks the OpenAI dialect to Vertex AI's OpenAI-compatible
+endpoint, but authenticates with a short-lived OAuth token from Google
+Application Default Credentials instead of a key (`src/google.rs`):
+
+```
+ GOOGLE_APPLICATION_CREDENTIALS ─┐
+ gcloud well-known ADC file ─────┼─▶ authorized_user ─▶ refresh-token exchange ─┐
+   (application-default login)   │   service_account ─▶ RS256 JWT (ring) ───────┼─▶ access token
+ neither ────────────────────────┴─▶ metadata server (GCE/GKE/Cloud Run) ───────┘   cached, refreshed
+                                                                                    5 min before expiry
+```
+
+- Locating credentials happens at `start` without network I/O; the first
+  token is fetched on the first `complete`. Token failures are `Fail::Auth`
+  and are never retried.
+- The project comes from the environment, else the credentials file
+  (`project_id`, then `quota_project_id`), else the metadata server.
+  A user credential's `quota_project_id` is also sent as `x-goog-user-project`.
+- Unsupported credential types (`external_account`,
+  `impersonated_service_account`) are reported as a startup warning.
+- Gemini attaches a *thought signature* to tool calls
+  (`extra_content.google.thought_signature`) that must be echoed back on the
+  next turn; it rides along on the normalized `tool_use` block as
+  `extra_content`. Tool calls without an id get `call_<n>` so results still
+  pair up.
 
 ## What `start` does
 
 1. Build `Llm::from_env()` from the configuration above.
-2. Warn via `Info` when no API key is set.
+2. Warn via `Info` when no API key is set (or, for `vertex`, when ADC or the
+   project can't be resolved).
 3. Greet via `Info` (`<model> @ <host> — /help for commands`).
 4. `hub.set_service(llm)`.
 
@@ -145,6 +178,10 @@ attempt 1 → 429 code 1113 → is_plan_mismatch ✓
 - `mirror_base` is bidirectional for the two coding portals and `None` for
   anything else (including the general `api/paas/v4` endpoint).
 - Alias resolution and the Anthropic→OpenAI history conversion.
+- Vertex endpoint construction (global vs regional host); Gemini thought
+  signatures and missing tool-call ids survive the round trip.
+- ADC file parsing: `authorized_user`, `service_account` (needs a PEM key),
+  unsupported types rejected.
 
 ## See also
 

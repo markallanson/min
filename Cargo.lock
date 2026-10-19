@@ -271,7 +271,9 @@ dependencies = [
 name = "min-llm"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "min-core",
+ "ring",
  "serde_json",
  "ureq",
 ]

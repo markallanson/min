@@ -2,9 +2,12 @@
 name = "min-llm"
 version.workspace = true
 edition.workspace = true
-description = "min plugin: streaming LLM client (Anthropic Messages or OpenAI chat dialects)"
+description = "min plugin: streaming LLM client (Anthropic Messages or OpenAI chat dialects, Vertex AI via Google ADC)"
 
 [dependencies]
 min-core = { path = "../min-core" }
 ureq = { version = "2", features = ["json"] }
 serde_json = "1"
+# Google ADC: already in the tree via rustls; used to sign service-account JWTs.
+ring = "0.17"
+base64 = "0.22"
