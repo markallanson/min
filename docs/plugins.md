@@ -55,7 +55,7 @@ the tests pin.
 | fs | [tools-fs.md](plugins/tools-fs.md) | capability | `read` / `edit` / `write` — exact-match, atomic edits |
 | shell | [tools-shell.md](plugins/tools-shell.md) | capability | `bash` with timeout, deadlock-free capture, output truncation |
 | clock | [tools-clock.md](plugins/tools-clock.md) | capability | current UTC time — the worked example, made real |
-| subagents | [subagents.md](plugins/subagents.md) | capability | `subagent` — one `min` process, parented on this session, per instruction |
+| subagents | [subagents.md](plugins/subagents.md) | capability + listener | `subagent` (one call, blocks) / `subagent_spawn` + `subagent_collect` (start many, join in parallel) — one `min` process per instruction, parented on this session |
 | context | [context.md](plugins/context.md) | source + listener | `~/.config/min/AGENTS.md` + project files → system-prompt sections |
 | herdr | [herdr.md](plugins/herdr.md) | listener | agent state → Herdr (no-op outside a Herdr pane; reports `--agent-session-id`) |
 | agent | [agent.md](plugins/agent.md) | listener/worker | the agent loop: LLM ↔ tools until done |
