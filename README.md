@@ -9,6 +9,10 @@ Read [docs/architecture.md](docs/architecture.md) for the full architecture:
 diagrams, event semantics, dependency rules, worked examples, and how to
 write a plugin.
 
+**Note this is not designed for use by anyone other than myself. It's a wildly
+incomplete coding agent. Completely bare. It's a play-thing. It's not suitable
+for you or your friends now, and likely never will be.**
+
 ## Use
 
 ```sh
