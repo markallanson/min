@@ -51,7 +51,7 @@ the tests pin.
 | session | [session.md](plugins/session.md) | source + listener | session identity (`<epoch>-<rand>`), JSONL persistence (XDG state dir), `--sessions` listing, and `--resume` |
 | herdr | [herdr.md](plugins/herdr.md) | listener | agent state → Herdr (no-op outside a Herdr pane; reports `--agent-session-id`) |
 | repl | [repl.md](plugins/repl.md) | source | terminal UI: raw-mode editor, streaming output, owns `Quit` |
-| llm | [llm.md](plugins/llm.md) | provider | streaming LLM service (anthropic + openai wire), retries, z.ai mirror |
+| llm | [llm.md](plugins/llm.md) | provider | streaming LLM service (anthropic + openai + ollama wire), retries, z.ai mirror |
 | fs | [tools-fs.md](plugins/tools-fs.md) | capability | `read` / `edit` / `write` — exact-match, atomic edits |
 | shell | [tools-shell.md](plugins/tools-shell.md) | capability | `bash` with timeout, deadlock-free capture, output truncation |
 | clock | [tools-clock.md](plugins/tools-clock.md) | capability | current UTC time — the worked example, made real |
@@ -192,6 +192,7 @@ plugins never import each other:
 | `ResetConversation` | repl → everyone | (none) — context re-reads instruction files, session re-rolls the id |
 | `ClearPromptSections` | context → agent | (none) — agent drops its collected system-prompt sections |
 | `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
+| `TurnCancelled` | agent → everyone | (none) — in-flight turn was cancelled by user (Ctrl-C) |
 | `Quit` | repl → everyone | (none) — the repl calls `hub.quit()` on it |
 
 Delivery rules in one breath: `hub.emit(e)` is immediate, synchronous and

@@ -103,7 +103,12 @@ fn main() {
         Box::new(min_session::SessionPlugin::with_mode(mode)), // session id, JSONL store, resume
         Box::new(min_herdr::HerdrPlugin::new()), // herdr state reporter (no-op outside herdr)
         Box::new(min_repl::Repl::new()),         // terminal UI
-        Box::new(min_llm::LlmPlugin),            // streaming LLM client
+        Box::new(min_llm::RouterPlugin),         // LLM router
+        Box::new(min_llm::AnthropicPlugin),      // Anthropic provider
+        Box::new(min_llm::OpenAiPlugin),         // OpenAI provider
+        Box::new(min_llm::VertexPlugin),         // Vertex provider
+        Box::new(min_llm::ZaiPlugin),            // Zai provider
+        Box::new(min_llm::OllamaPlugin),         // Ollama provider
         Box::new(min_tools_fs::FsPlugin),        // read / edit / write
         Box::new(min_tools_shell::ShellPlugin),  // bash
         Box::new(min_tools_clock::ClockPlugin),  // current UTC time

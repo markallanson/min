@@ -43,8 +43,9 @@ code):
            ├─ each drained on its own thread (no pipe deadlocks: even if
    stderr ─┘   the child fills one pipe and blocks, both keep draining)
  poll try_wait() every 20 ms
-   ├─ exits before the deadline → status
-   └─ deadline passes           → kill(), wait(), mark timed_out
+   ├─ cancelled (is_cancelled()) → kill process group, wait(), return Err("cancelled by user")
+   ├─ exits before the deadline  → status
+   └─ deadline passes            → kill(), wait(), mark timed_out
  join both drainers, stitch stdout + stderr, truncate, report
 ```
 
@@ -100,6 +101,7 @@ A hang: `{"command": "sleep 30", "timeout_secs": 1}` →
 - Exit code and stdout captured (`echo hello; exit 3` → `exit code: 3`).
 - stderr stitched under a `--- stderr ---` marker.
 - Timeout kills within its window (1s deadline finishes well under 10s).
+- Cancellation kills the running command promptly (`cancels_running_command`).
 - `seq 1 100000` comes back truncated, under ~26k chars, with the marker.
 
 ## See also

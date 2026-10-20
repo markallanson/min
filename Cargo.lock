@@ -322,6 +322,7 @@ dependencies = [
 name = "min-tools-shell"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "min-core",
  "serde_json",
 ]

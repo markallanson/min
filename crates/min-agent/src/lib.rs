@@ -16,6 +16,7 @@ use std::time::Instant;
 const MAX_ROUNDS: usize = 1000;
 
 pub struct AgentPlugin {
+    active_model: String,
     messages: Vec<Value>,
     system: String,
     /// Extra prompt sections handed over via `SystemPromptSection` events
@@ -28,6 +29,7 @@ pub struct AgentPlugin {
 impl AgentPlugin {
     pub fn new() -> Self {
         AgentPlugin {
+            active_model: std::env::var("MIN_MODEL").unwrap_or_else(|_| "claude-3-5-sonnet-20241022".into()),
             messages: Vec::new(),
             system: String::new(),
             sections: Vec::new(),
@@ -87,9 +89,9 @@ impl AgentPlugin {
         }
         self.push_message(hub, json!({"role": "user", "content": user_text}));
         for round in 1..=MAX_ROUNDS {
-            let Some(llm) = hub.service::<min_llm::Llm>() else {
+            let Some(router) = hub.service::<min_core::llm::LlmRouter>() else {
                 hub.emit(events::Error {
-                    text: "no LLM service — is the llm plugin loaded?".into(),
+                    text: "no LLM router loaded — is the llm plugin loaded?".into(),
                 });
                 return;
             };
@@ -105,7 +107,7 @@ impl AgentPlugin {
                 .collect();
             hub.emit(events::LlmStart {
                 round,
-                model: llm.model.clone(),
+                model: self.active_model.clone(),
                 messages: self.messages.len(),
                 tools: tools.len(),
             });
@@ -121,10 +123,14 @@ impl AgentPlugin {
             let mut on_status = |s: &str| {
                 hub.emit(events::Info { text: s.to_string() });
             };
-            let message = match llm.complete(
+            let messages_json = serde_json::to_string(&self.messages).unwrap_or_default();
+            let tools_json = serde_json::to_string(&tools).unwrap_or_default();
+
+            let message_str = match router.complete(
+                &self.active_model,
                 &system,
-                &self.messages,
-                &tools,
+                &messages_json,
+                &tools_json,
                 &mut on_delta,
                 &mut on_thinking,
                 &mut on_status,
@@ -135,6 +141,8 @@ impl AgentPlugin {
                     return;
                 }
             };
+            
+            let message: Value = serde_json::from_str(&message_str).unwrap_or_else(|_| json!({}));
             hub.emit(events::MessageEnd {});
             self.push_message(
                 hub,

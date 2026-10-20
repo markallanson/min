@@ -117,15 +117,14 @@ impl Plugin for SubagentsPlugin {
         if let Some(e) = event.downcast_ref::<events::SessionStart>() {
             *self.session.borrow_mut() = Some(e.id.clone());
         }
-        // Shutdown sweep: spawn's contract ends at collect, but a quitting
-        // parent must not leave orphans holding pipes. Every still-live
-        // job gets the group kill + reap + drain-join it would have gotten
-        // at its own deadline.
-        if event.downcast_ref::<events::Quit>().is_some() {
+        // Shutdown / cancellation sweep: spawn's contract ends at collect, but
+        // an interrupted turn or quitting parent must not leave orphans holding
+        // pipes. Every still-live job gets the group kill + reap + drain-join.
+        if event.downcast_ref::<events::Quit>().is_some()
+            || event.downcast_ref::<events::TurnCancelled>().is_some()
+        {
             for (_, job) in self.jobs.borrow_mut().iter_mut() {
-                // The result goes nowhere — min is quitting; the kill and
-                // the reap are what matter.
-                let _ = job.kill("min is quitting — subagent killed");
+                let _ = job.kill("cancelled — subagent killed");
             }
         }
     }
@@ -284,6 +283,9 @@ fn finish(job: &mut Job) -> Result<String, String> {
 /// past it. Records the formatted result in `job.output`.
 fn wait_job(job: &mut Job) -> Result<String, String> {
     loop {
+        if min_core::is_cancelled() {
+            return job.kill("cancelled by user");
+        }
         match job.child.try_wait() {
             Ok(Some(_)) => {
                 let r = finish(job);
@@ -296,7 +298,7 @@ fn wait_job(job: &mut Job) -> Result<String, String> {
                     job.timeout
                 ));
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => return Err(format!("wait: {e}")),
         }
     }
@@ -378,6 +380,9 @@ impl Tool for SubagentTool {
     }
 
     fn run(&self, input: &str) -> Result<String, String> {
+        if min_core::is_cancelled() {
+            return Err("cancelled by user".into());
+        }
         let v: Value = serde_json::from_str(input).map_err(|e| format!("bad input: {e}"))?;
         let instruction = v["instruction"].as_str().ok_or("missing `instruction`")?;
         let timeout = parse_timeout(&v)?;
@@ -402,6 +407,9 @@ impl Tool for SpawnTool {
     }
 
     fn run(&self, input: &str) -> Result<String, String> {
+        if min_core::is_cancelled() {
+            return Err("cancelled by user".into());
+        }
         let v: Value = serde_json::from_str(input).map_err(|e| format!("bad input: {e}"))?;
         let instruction = v["instruction"].as_str().ok_or("missing `instruction`")?;
         let timeout = parse_timeout(&v)?;
@@ -469,8 +477,14 @@ impl Tool for CollectTool {
         let mut winner: Option<String> = None;
         if any {
             while !waiting.is_empty() && winner.is_none() {
+                if min_core::is_cancelled() {
+                    break;
+                }
                 let mut i = 0;
                 while i < waiting.len() && winner.is_none() {
+                    if min_core::is_cancelled() {
+                        break;
+                    }
                     if waiting[i].1.child.try_wait().is_ok_and(|s| s.is_some()) {
                         let (handle, mut job) = waiting.swap_remove(i);
                         let output = finish(&mut job);
@@ -497,8 +511,15 @@ impl Tool for CollectTool {
                     }
                 }
                 if winner.is_none() && !waiting.is_empty() {
-                    std::thread::sleep(Duration::from_millis(100));
+                    std::thread::sleep(Duration::from_millis(50));
                 }
+            }
+            if min_core::is_cancelled() {
+                for (handle, mut job) in waiting.drain(..) {
+                    let output = job.kill("cancelled by user");
+                    results.push(json!({"handle": handle, "ok": false, "result": output.unwrap_err()}));
+                }
+                return Err("cancelled by user".into());
             }
             for (handle, mut job) in waiting.drain(..) {
                 let output =
@@ -507,12 +528,24 @@ impl Tool for CollectTool {
             }
         } else {
             for (handle, mut job) in waiting {
-                let output = wait_job(&mut job);
-                results.push(json!({
-                    "handle": handle,
-                    "ok": output.is_ok(),
-                    "result": output.unwrap_or_else(|e| e),
-                }));
+                if min_core::is_cancelled() {
+                    let output = job.kill("cancelled by user");
+                    results.push(json!({
+                        "handle": handle,
+                        "ok": false,
+                        "result": output.unwrap_err(),
+                    }));
+                } else {
+                    let output = wait_job(&mut job);
+                    results.push(json!({
+                        "handle": handle,
+                        "ok": output.is_ok(),
+                        "result": output.unwrap_or_else(|e| e),
+                    }));
+                }
+            }
+            if min_core::is_cancelled() {
+                return Err("cancelled by user".into());
             }
         }
 
@@ -550,6 +583,15 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+    use std::sync::{Mutex, MutexGuard};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_test() -> MutexGuard<'static, ()> {
+        let g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        min_core::reset_cancel();
+        g
+    }
 
     /// A stand-in "min": a shell script that ignores its arguments, prints
     /// what it was given on stdin (what the real child turns into a turn),
@@ -590,6 +632,7 @@ mod tests {
 
     #[test]
     fn instruction_goes_to_stdin_parent_to_args_output_comes_back() {
+        let _guard = lock_test();
         let child = fake_min("echo \"parent: $2\"\ncat\necho done", "ok");
         let (sub, _, _) = tool("1768-abc1", &child);
         let out = sub
@@ -604,6 +647,7 @@ mod tests {
 
     #[test]
     fn nonzero_exit_is_an_error_that_still_carries_the_output() {
+        let _guard = lock_test();
         let child = fake_min("cat\necho partial work\necho more >&2\nexit 3", "fail");
         let (sub, _, _) = tool("p", &child);
         let err = sub
@@ -618,6 +662,7 @@ mod tests {
 
     #[test]
     fn timeout_kills_a_stuck_subagent() {
+        let _guard = lock_test();
         let child = fake_min("sleep 30", "stuck");
         let (sub, _, _) = tool("p", &child);
         let t0 = Instant::now();
@@ -631,6 +676,7 @@ mod tests {
 
     #[test]
     fn stderr_only_output_still_reaches_the_parent() {
+        let _guard = lock_test();
         let child = fake_min("echo oops >&2", "quiet");
         let (sub, _, _) = tool("p", &child);
         let out = sub.run(r#"{"instruction":"say nothing","timeout_secs":10}"#).unwrap();
@@ -641,6 +687,7 @@ mod tests {
 
     #[test]
     fn huge_output_is_truncated_but_head_and_tail_survive() {
+        let _guard = lock_test();
         let child = fake_min("seq 1 100000; cat >/dev/null", "big");
         let (sub, _, _) = tool("p", &child);
         let out = sub.run(r#"{"instruction":"count","timeout_secs":10}"#).unwrap();
@@ -653,6 +700,7 @@ mod tests {
 
     #[test]
     fn tool_needs_a_session_and_an_instruction() {
+        let _guard = lock_test();
         let child = fake_min("true", "sess");
         let s: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let jobs: Rc<RefCell<JobTable>> = Rc::new(RefCell::new(HashMap::new()));
@@ -693,6 +741,7 @@ mod tests {
 
     #[test]
     fn spawn_returns_a_handle_at_once_and_collect_joins_the_result() {
+        let _guard = lock_test();
         let child = fake_min("echo \"parent: $2\"\ncat", "spawn");
         let (_, spawn, collect) = tool("p1", &child);
         let reply = spawn
@@ -717,6 +766,7 @@ mod tests {
 
     #[test]
     fn two_spawns_run_in_wall_clock_parallel() {
+        let _guard = lock_test();
         let child = fake_min("sleep 1; cat", "par");
         let (_, spawn, collect) = tool("p2", &child);
         let t0 = Instant::now();
@@ -734,6 +784,7 @@ mod tests {
 
     #[test]
     fn collect_reports_missing_handles() {
+        let _guard = lock_test();
         let (_, _, collect) = tool("p3", &fake_min("true", "p3"));
         let err = collect.run(r#"{"handles":["9"]}"#).unwrap_err();
         assert!(err.contains("no such handle: 9"), "{err}");
@@ -743,6 +794,7 @@ mod tests {
 
     #[test]
     fn handles_are_never_reused_after_a_collect() {
+        let _guard = lock_test();
         let child = fake_min("cat", "reuse");
         let (_, spawn, collect) = tool("p6", &child);
         spawn.run(r#"{"instruction":"one","timeout_secs":10}"#).unwrap();
@@ -756,6 +808,7 @@ mod tests {
 
     #[test]
     fn collect_mode_any_returns_the_first_success_and_kills_the_rest() {
+        let _guard = lock_test();
         let slow = fake_min("sleep 30; cat", "any-slow");
         let fast = fake_min("echo quick; cat", "any-fast");
         let s = Rc::new(RefCell::new(Some("p4".to_string())));
@@ -793,6 +846,7 @@ mod tests {
 
     #[test]
     fn quit_kills_every_live_job() {
+        let _guard = lock_test();
         let child = fake_min("sleep 30; cat", "quit");
         let mut plugin = SubagentsPlugin::new();
         *plugin.session.borrow_mut() = Some("p5".into());
@@ -820,6 +874,58 @@ mod tests {
         let t0 = Instant::now();
         let _ = job.child.wait();
         assert!(t0.elapsed().as_secs() < 5, "child was killed, not left running");
+        drop(table);
+        let _ = std::fs::remove_file(&child);
+    }
+
+    #[test]
+    fn cancels_running_subagent() {
+        let _guard = lock_test();
+        let child = fake_min("sleep 30; cat", "sub-cancel");
+        let (sub, _, _) = tool("p", &child);
+        let handle = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(50));
+            min_core::cancel();
+        });
+        let t0 = Instant::now();
+        let err = sub
+            .run(r#"{"instruction":"long task","timeout_secs":60}"#)
+            .unwrap_err();
+        handle.join().unwrap();
+        assert!(err.contains("cancelled"));
+        assert!(t0.elapsed().as_secs() < 5, "cancelled promptly");
+        let _ = std::fs::remove_file(&child);
+        min_core::reset_cancel();
+    }
+
+    #[test]
+    fn turn_cancelled_kills_every_live_job() {
+        let _guard = lock_test();
+        let child = fake_min("sleep 30; cat", "turn-cancel");
+        let mut plugin = SubagentsPlugin::new();
+        *plugin.session.borrow_mut() = Some("p-cancel".into());
+        let hub = Hub::new(vec![]);
+        let jobs = plugin.jobs.clone();
+
+        let spawn = SpawnTool {
+            session: plugin.session.clone(),
+            jobs: jobs.clone(),
+            next_handle: plugin.next_handle.clone(),
+            exe: Some(child.clone()),
+        };
+        let reply = spawn
+            .run(r#"{"instruction":"forever","timeout_secs":60}"#)
+            .unwrap();
+        assert!(reply.starts_with("handle: 1"), "{reply}");
+
+        plugin.handle(&hub, &events::TurnCancelled {});
+        assert!(jobs.borrow().get("1").unwrap().output.borrow().is_some());
+
+        let mut table = jobs.borrow_mut();
+        let mut job = table.remove("1").unwrap();
+        let t0 = Instant::now();
+        let _ = job.child.wait();
+        assert!(t0.elapsed().as_secs() < 5, "child was killed on turn cancellation");
         drop(table);
         let _ = std::fs::remove_file(&child);
     }

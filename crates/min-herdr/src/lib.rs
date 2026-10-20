@@ -228,7 +228,9 @@ impl Plugin for HerdrPlugin {
             self.session = None;
         } else if event.downcast_ref::<events::UserInput>().is_some() {
             self.report("working");
-        } else if event.downcast_ref::<events::MessageEnd>().is_some() {
+        } else if event.downcast_ref::<events::MessageEnd>().is_some()
+            || event.downcast_ref::<events::TurnCancelled>().is_some()
+        {
             self.report("idle");
         } else if event.downcast_ref::<events::Error>().is_some() {
             self.report("blocked");
@@ -303,6 +305,7 @@ mod tests {
         // The three states Herdr understands, each wired to one min event.
         assert_eq!(state_for(&events::UserInput { text: String::new() }), Some("working"));
         assert_eq!(state_for(&events::MessageEnd {}), Some("idle"));
+        assert_eq!(state_for(&events::TurnCancelled {}), Some("idle"));
         assert_eq!(state_for(&events::Error { text: String::new() }), Some("blocked"));
         assert_eq!(state_for(&events::ToolEnd { ok: true, secs: 0.0, note: String::new(), preview: String::new() }), None);
     }
@@ -312,7 +315,9 @@ mod tests {
     fn state_for(event: &dyn Any) -> Option<&'static str> {
         if event.downcast_ref::<events::UserInput>().is_some() {
             Some("working")
-        } else if event.downcast_ref::<events::MessageEnd>().is_some() {
+        } else if event.downcast_ref::<events::MessageEnd>().is_some()
+            || event.downcast_ref::<events::TurnCancelled>().is_some()
+        {
             Some("idle")
         } else if event.downcast_ref::<events::Error>().is_some() {
             Some("blocked")

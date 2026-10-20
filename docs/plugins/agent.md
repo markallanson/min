@@ -79,6 +79,7 @@ the only line of work that leaves the plugin (via the service).
 | `Thinking` | every non-text stream chunk from `on_thinking` — `text` (reasoning tokens) and `tool` (name of the tool call being streamed) |
 | `AssistantDelta` | every streamed text chunk, forwarded from the LLM's `on_delta` callback |
 | `MessageEnd` | after each complete assistant message |
+| `TurnCancelled` | when the turn is cancelled by the user (Ctrl-C) mid-stream or during a tool call |
 | `ToolStart` | before each tool runs — `name` + a one-line `brief` (`command`'s first line or `path`, capped at 80 chars) |
 | `ToolEnd` | after each tool — `ok`, `secs`, `note` (first non-blank line, 100 chars), `preview` (first 5 non-blank lines, 120 cols each, UTF-8-safe) |
 | `Info` | retry/status chatter forwarded from the LLM's `on_status` |
@@ -153,6 +154,9 @@ tool-call loop ends the turn with an `Error` instead of hanging forever.
   old ones so a re-emitted file replaces rather than duplicates.
 - `push_message` emits `ConversationMessage` and `ReplayMessage` restores
   `messages` without re-emitting.
+- `turn_cancelled_synthesizes_interrupted_message_and_emits_event`: turn cancellation
+  appends an interrupted assistant message to preserve alternating roles and emits
+  `TurnCancelled`.
 
 ## See also
 

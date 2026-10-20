@@ -345,6 +345,11 @@ impl Plugin for SessionPlugin {
                 "type": "error",
                 "text": e.text,
             }));
+        } else if event.downcast_ref::<events::TurnCancelled>().is_some() {
+            self.write_json(&json!({
+                "type": "info",
+                "text": "turn cancelled by user",
+            }));
         } else if event.downcast_ref::<events::SessionEnd>().is_some() {
             if self.file.is_some() {
                 self.write_json(&json!({

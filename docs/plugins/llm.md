@@ -24,7 +24,7 @@ content blocks, so the rest of min never cares which wire format is in use:
 
 | var | default | meaning |
 |---|---|---|
-| `MIN_API` | `anthropic` | dialect or alias: `anthropic` · `openai` · `zai` (Z.ai coding plan) · `openrouter` · `vertex` |
+| `MIN_API` | `anthropic` | dialect or alias: `anthropic` · `openai` · `zai` (Z.ai coding plan) · `openrouter` · `vertex` · `ollama` |
 | `MIN_BASE_URL` | the alias's endpoint | overrides the endpoint |
 | `MIN_MODEL` | the alias's model (`claude-sonnet-4-5` etc.) | overrides the model |
 | `MIN_MAX_TOKENS` | `16384` | max output tokens |
@@ -32,6 +32,9 @@ content blocks, so the rest of min never cares which wire format is in use:
 | `GOOGLE_CLOUD_PROJECT` (also `CLOUDSDK_CORE_PROJECT`, `GCLOUD_PROJECT`) | the credentials' project | Vertex project (`MIN_API=vertex`) |
 | `GOOGLE_CLOUD_LOCATION` / `GOOGLE_CLOUD_REGION` | `global` | Vertex region |
 | `GOOGLE_APPLICATION_CREDENTIALS` | gcloud's well-known ADC file | Google credentials file |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server (`MIN_API=ollama`); a bare `host[:port]` is accepted |
+| `OLLAMA_API_KEY` | — | optional bearer token (e.g. `OLLAMA_HOST=https://ollama.com` for cloud models) |
+| `MIN_NUM_CTX` | `32768` | Ollama `options.num_ctx` — the server default is small and silently truncates |
 | `HTTPS_PROXY` / `https_proxy` | — | outbound proxy |
 
 An alias resolves to `(dialect, base URL, default model)`:
@@ -42,6 +45,7 @@ An alias resolves to `(dialect, base URL, default model)`:
 | `openai` | `openai` | `https://api.openai.com/v1` | `gpt-4o` |
 | `zai` | `openai` | `https://api.z.ai/api/coding/paas/v4` | `glm-5.3` |
 | `openrouter` | `openai` | `https://openrouter.ai/api/v1` | `anthropic/claude-sonnet-4.5` |
+| `ollama` | `ollama` (native `/api/chat`) | `$OLLAMA_HOST` or `http://localhost:11434` | `qwen3-coder` |
 | `vertex` / `vertexai` | `openai` wire, Google auth | `https://{region-}aiplatform.googleapis.com/v1/projects/{p}/locations/{region}/endpoints/openapi` | `google/gemini-2.5-pro` |
 
 ### Vertex AI and Application Default Credentials
@@ -66,11 +70,38 @@ Application Default Credentials instead of a key (`src/google.rs`):
   A user credential's `quota_project_id` is also sent as `x-goog-user-project`.
 - Unsupported credential types (`external_account`,
   `impersonated_service_account`) are reported as a startup warning.
+- Gemini requests `extra_body.google.thinking_config.include_thoughts = true`
+  (plus `thinking_level = "HIGH"` on Gemini 3/4 models) and streams thought
+  summaries as `delta.content` chunks tagged with
+  `extra_content.google.thought = true`, which `parse_openai_chunk` routes to
+  `on_thinking` rather than `on_delta`.
 - Gemini attaches a *thought signature* to tool calls
   (`extra_content.google.thought_signature`) that must be echoed back on the
   next turn; it rides along on the normalized `tool_use` block as
   `extra_content`. Tool calls without an id get `call_<n>` so results still
   pair up.
+
+### Ollama
+
+`MIN_API=ollama` speaks Ollama's native `/api/chat` rather than its
+OpenAI-compatible endpoint, because only the native API accepts
+`options.num_ctx`. Without it, Ollama's default context window cuts off
+an agent's system prompt and history without reporting it.
+
+- No key is needed for a local server (`Auth::None`). `OLLAMA_API_KEY`
+  (or `MIN_API_KEY`), if set, is sent as `Authorization: Bearer …`.
+- The response streams as bare NDJSON lines rather than SSE `data:`
+  lines. `message.thinking` goes to `on_thinking`, and `message.content`
+  goes to `on_delta`.
+- Tool calls arrive complete, with `arguments` already parsed into an
+  object, and usually without an id, so `Blocks.finish` assigns `call_<n>`.
+  Ollama reports `done_reason: "stop"` even when the turn ended in tool
+  calls, so any tool call makes the stop reason `tool_use`.
+- On the way out, `to_ollama_messages` reuses the OpenAI conversion, turns
+  tool arguments back into objects, and tags `role:"tool"` results with
+  `tool_name`, which Ollama uses to pair a result with its call.
+- `max_tokens` is sent as `options.num_predict`. Errors come back as
+  `{"error": "…"}` with a string value.
 
 ## What `start` does
 
@@ -182,10 +213,15 @@ attempt 1 → 429 code 1113 → is_plan_mismatch ✓
 - `mirror_base` is bidirectional for the two coding portals and `None` for
   anything else (including the general `api/paas/v4` endpoint).
 - Alias resolution and the Anthropic→OpenAI history conversion.
+- Ollama: `OLLAMA_HOST` normalization, native body shape (`num_ctx`,
+  object arguments, `tool_name` on results), and NDJSON chunk parsing
+  (thinking, whole tool calls, `stop`→`tool_use`, `length`→`max_tokens`, errors).
 - Vertex endpoint construction (global vs regional host); Gemini thought
   signatures and missing tool-call ids survive the round trip.
 - ADC file parsing: `authorized_user`, `service_account` (needs a PEM key),
   unsupported types rejected.
+- `cancel_reader_aborts_on_cancellation_or_interrupted` and `complete_aborts_immediately_if_cancelled`:
+  in-flight reads and completions abort immediately when `is_cancelled()` is set.
 
 ## See also
 
