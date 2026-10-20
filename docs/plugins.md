@@ -192,6 +192,7 @@ plugins never import each other:
 | `ResetConversation` | repl → everyone | (none) — context re-reads instruction files, session re-rolls the id |
 | `ClearPromptSections` | context → agent | (none) — agent drops its collected system-prompt sections |
 | `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
+| `TurnCancelled` | agent → everyone | (none) — in-flight turn was cancelled by user (Ctrl-C) |
 | `Quit` | repl → everyone | (none) — the repl calls `hub.quit()` on it |
 
 Delivery rules in one breath: `hub.emit(e)` is immediate, synchronous and

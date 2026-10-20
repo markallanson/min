@@ -66,6 +66,11 @@ Application Default Credentials instead of a key (`src/google.rs`):
   A user credential's `quota_project_id` is also sent as `x-goog-user-project`.
 - Unsupported credential types (`external_account`,
   `impersonated_service_account`) are reported as a startup warning.
+- Gemini requests `extra_body.google.thinking_config.include_thoughts = true`
+  (plus `thinking_level = "HIGH"` on Gemini 3/4 models) and streams thought
+  summaries as `delta.content` chunks tagged with
+  `extra_content.google.thought = true`, which `parse_openai_chunk` routes to
+  `on_thinking` rather than `on_delta`.
 - Gemini attaches a *thought signature* to tool calls
   (`extra_content.google.thought_signature`) that must be echoed back on the
   next turn; it rides along on the normalized `tool_use` block as
@@ -186,6 +191,8 @@ attempt 1 → 429 code 1113 → is_plan_mismatch ✓
   signatures and missing tool-call ids survive the round trip.
 - ADC file parsing: `authorized_user`, `service_account` (needs a PEM key),
   unsupported types rejected.
+- `cancel_reader_aborts_on_cancellation_or_interrupted` and `complete_aborts_immediately_if_cancelled`:
+  in-flight reads and completions abort immediately when `is_cancelled()` is set.
 
 ## See also
 

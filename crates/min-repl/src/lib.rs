@@ -72,6 +72,9 @@ impl Plugin for Repl {
     }
 
     fn wait(&mut self, _hub: &Hub) -> Option<Box<dyn Any>> {
+        min_core::reset_cancel();
+        INTERRUPTED.store(false, Ordering::SeqCst);
+        install_sigint_restore();
         let Some(line) = self.read_line() else {
             // EOF — ctrl-d at the prompt, or SIGINT (see `on_sigint_quit`,
             // which interrupts the blocked read and lets this path run).
@@ -99,11 +102,10 @@ impl Plugin for Repl {
                 None
             }
             s => {
-                // A turn is starting: from here an interrupt cannot unwind
-                // through the blocking LLM call, so ctrl-c restores the
-                // terminal and hard-exits. `handle` re-arms the quitting
-                // handler when the turn ends.
-                install_sigint_exit_handler();
+                // A turn is starting: ctrl-c now cancels in-flight LLM or tool
+                // requests and returns to the prompt.
+                min_core::reset_cancel();
+                install_sigint_cancel_handler();
                 Some(Box::new(events::UserInput { text: s.to_string() }))
             }
         }
@@ -125,15 +127,18 @@ impl Plugin for Repl {
             self.clear_waiting();
             self.write(&e.text);
             self.at_line_start = e.text.ends_with('\n');
+        } else if event.downcast_ref::<events::TurnCancelled>().is_some() {
+            self.clear_waiting();
+            if !self.at_line_start {
+                self.write("\n");
+            }
+            self.at_line_start = true;
         } else if event.downcast_ref::<events::MessageEnd>().is_some() {
             self.clear_waiting();
             if !self.at_line_start {
                 self.write("\n");
             }
             self.at_line_start = true;
-            // Back at (or heading for) the prompt: ctrl-c may quit through
-            // the event bus again rather than kill the process.
-            install_sigint_restore();
         } else if let Some(e) = event.downcast_ref::<events::ToolStart>() {
             self.put_line(&format!(
                 "  {} {} {}",
@@ -778,23 +783,17 @@ unsafe extern "C" fn on_sigint_quit(_sig: libc::c_int) {
     }
 }
 
-/// SIGINT mid-turn: the repl swapped this in when the turn started. An
-/// interrupt here cannot unwind through the blocking LLM call (std swallows
-/// the `EINTR`), so restore the terminal and hard-exit with the conventional
-/// 130 — the same visible outcome, just without events.
-unsafe extern "C" fn on_sigint_exit(_sig: libc::c_int) {
-    unsafe {
-        restore_termios();
-        libc::_exit(130);
-    }
+/// SIGINT mid-turn: signals cancellation to in-flight requests and tools.
+unsafe extern "C" fn on_sigint_cancel(_sig: libc::c_int) {
+    min_core::cancel();
 }
 
 fn install_sigint_restore() {
     install_sigint_handler(on_sigint_quit);
 }
 
-fn install_sigint_exit_handler() {
-    install_sigint_handler(on_sigint_exit);
+fn install_sigint_cancel_handler() {
+    install_sigint_handler(on_sigint_cancel);
 }
 
 /// `signal`-equivalent registration, but without `SA_RESTART`: the point of
@@ -811,17 +810,25 @@ fn install_sigint_handler(handler: unsafe extern "C" fn(libc::c_int)) {
 mod sigint_tests {
     use super::*;
 
-    /// The handler is swapped for the hard-exit one during a turn (where an
-    /// interrupt cannot unwind through the blocking LLM call) and back
-    /// afterwards. Pin both directions; we cannot actually take SIGINT in a
-    /// test without killing the test runner.
+    /// The handler is swapped for the turn-cancellation one during a turn
+    /// and back to the quit handler when returning to the prompt.
     #[test]
     fn mid_turn_ctrl_c_swaps_handlers_and_back() {
         install_sigint_restore();
-        install_sigint_exit_handler();
-        assert_eq!(sigint_handler(), on_sigint_exit as *const () as usize);
+        install_sigint_cancel_handler();
+        assert_eq!(sigint_handler(), on_sigint_cancel as *const () as usize);
         install_sigint_restore();
         assert_eq!(sigint_handler(), on_sigint_quit as *const () as usize);
+    }
+
+    #[test]
+    fn cancel_handler_sets_cancellation_flag() {
+        min_core::reset_cancel();
+        assert!(!min_core::is_cancelled());
+        unsafe { on_sigint_cancel(libc::SIGINT) };
+        assert!(min_core::is_cancelled());
+        min_core::reset_cancel();
+        assert!(!min_core::is_cancelled());
     }
 
     fn sigint_handler() -> usize {

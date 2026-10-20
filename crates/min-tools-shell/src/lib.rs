@@ -7,7 +7,9 @@
 use min_core::{Hub, Plugin, Tool};
 use serde_json::Value;
 use std::io::Read;
-use std::process::{Command, Stdio};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 pub struct ShellPlugin;
@@ -31,14 +33,21 @@ impl Tool for BashTool {
         r#"{"description":"Run a command in bash (inherits min's cwd and environment). Returns the exit code, stdout, then stderr. Output is truncated to ~24k chars. Avoid interactive commands; for long builds pass a higher timeout_secs.","input_schema":{"type":"object","properties":{"command":{"type":"string"},"timeout_secs":{"type":"integer","description":"kill the command after this many seconds (default 120, max 600)"}},"required":["command"]}}"#
     }
     fn run(&self, input: &str) -> Result<String, String> {
+        if min_core::is_cancelled() {
+            return Err("cancelled by user".into());
+        }
         let v: Value = serde_json::from_str(input).map_err(|e| format!("bad input: {e}"))?;
         let cmd = v["command"].as_str().ok_or("missing `command`")?;
         let timeout = v["timeout_secs"].as_u64().unwrap_or(120).clamp(1, 600);
-        let mut child = Command::new("bash")
+        let mut command = Command::new("bash");
+        command
             .arg("-c")
             .arg(cmd)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command
             .spawn()
             .map_err(|e| format!("spawn bash: {e}"))?;
         let stdout = child.stdout.take();
@@ -47,19 +56,26 @@ impl Tool for BashTool {
         let t_err = std::thread::spawn(move || drain(stderr));
 
         let deadline = Instant::now() + Duration::from_secs(timeout);
+        let mut timed_out = false;
+        let mut cancelled = false;
         let status = loop {
+            if min_core::is_cancelled() {
+                cancelled = true;
+                break None;
+            }
             match child.try_wait().map_err(|e| format!("wait: {e}"))? {
                 Some(s) => break Some(s),
-                None if Instant::now() >= deadline => break None,
+                None if Instant::now() >= deadline => {
+                    timed_out = true;
+                    break None;
+                }
                 None => std::thread::sleep(Duration::from_millis(20)),
             }
         };
-        let mut timed_out = false;
         let status = match status {
             Some(s) => s,
             None => {
-                timed_out = true;
-                let _ = child.kill();
+                kill_process(&mut child);
                 child.wait().map_err(|e| format!("wait after kill: {e}"))?
             }
         };
@@ -71,6 +87,10 @@ impl Tool for BashTool {
             }
             out.push_str("--- stderr ---\n");
             out.push_str(&err);
+        }
+
+        if cancelled {
+            return Err("cancelled by user".into());
         }
 
         let mut reply = String::new();
@@ -85,6 +105,15 @@ impl Tool for BashTool {
         Ok(reply)
     }
 }
+
+fn kill_process(child: &mut Child) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.kill();
+}
+
 
 fn drain(r: Option<impl Read>) -> String {
     let mut s = String::new();
@@ -110,8 +139,13 @@ fn truncate(s: &str, cap: usize) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Mutex;
+
+    static LOCK: Mutex<()> = Mutex::new(());
 
     fn run(v: Value) -> String {
+        let _guard = LOCK.lock().unwrap();
+        min_core::reset_cancel();
         BashTool.run(&v.to_string()).unwrap()
     }
 
@@ -143,5 +177,22 @@ mod tests {
         let out = run(json!({"command": "seq 1 100000"}));
         assert!(out.len() < 26_000, "len={}", out.len());
         assert!(out.contains("truncated"), "len={}", out.len());
+    }
+
+    #[test]
+    fn cancels_running_command() {
+        let _guard = LOCK.lock().unwrap();
+        min_core::reset_cancel();
+        let handle = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(50));
+            min_core::cancel();
+        });
+        let t0 = Instant::now();
+        let out = BashTool.run(&json!({"command": "sleep 30"}).to_string());
+        handle.join().unwrap();
+        assert!(out.is_err());
+        assert!(out.unwrap_err().contains("cancelled"));
+        assert!(t0.elapsed().as_secs() < 5, "cancelled promptly");
+        min_core::reset_cancel();
     }
 }

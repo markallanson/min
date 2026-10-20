@@ -109,6 +109,7 @@ discriminator:
 | `ConversationMessage` | write `{"type":"message","role":...,"content":...}` |
 | `ToolStart` / `ToolEnd` | write `{"type":"tool",...}` / `{"type":"tool_end",...}` |
 | `Info` / `Error` | write `{"type":"info",...}` / `{"type":"error",...}` |
+| `TurnCancelled` | write `{"type":"info","text":"turn cancelled by user"}` |
 | `SessionEnd` | write `{"type":"session_end",...}` and close file |
 | `ResetConversation` | close current session (`SessionEnd`) and open a fresh minted session (`SessionStart`) |
 | `Quit` | close current session (`SessionEnd`) |

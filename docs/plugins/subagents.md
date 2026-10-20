@@ -164,6 +164,7 @@ deterministic.
 | event | reaction |
 |---|---|
 | `SessionStart` | remember `id` — it is the `--parent-session` value for every subagent spawned from now on (a spawn after `/clear` parents on the *new* session) |
+| `TurnCancelled` | kill every job still in the table so cancelled turns do not leave running children |
 | `Quit` | kill every job still in the table (group kill + reap + drain join), so no subagent outlives min |
 
 **Emits**
@@ -251,6 +252,8 @@ injectable field, so the full JSON-input → spawn → stdin → drain → statu
   empty `handles`, and a missing session id each produce specific errors;
 - `SessionStart` events update the parent id the tools will use, later
   announcements replace earlier ones, and unrelated events change nothing;
+- `cancels_running_subagent`: in-flight subagents are aborted and killed promptly when `is_cancelled()` is set;
+- `turn_cancelled_kills_every_live_job`: `TurnCancelled` sweeps the table and kills any live jobs;
 - `Quit` sweeps the table: every live job is group-killed, reaped, and its
   drain threads joined — nothing outlives the parent.
 

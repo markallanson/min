@@ -57,7 +57,8 @@ fn handle(…) {
 | `LlmStart` | draw transient `  ⠋ thinking…` on the current line and reset the accumulated thinking preview (tty only) |
 | `Thinking` | append `text` to the thinking buffer and advance the transient spinner (`  ⠙ thinking…`, `  ⠙ thinking: <first 50 chars>…` when reasoning text is available, or `  ⠙ calling <tool>…` while tool-call JSON streams) |
 | `AssistantDelta` | clear any transient spinner (`\r\x1b[K`), then write the chunk verbatim (streaming output) |
-| `MessageEnd` | clear any transient spinner; newline if the stream didn't end at one; re-arm the quit-style SIGINT handler |
+| `TurnCancelled` | clear any transient spinner; newline if not at line start |
+| `MessageEnd` | clear any transient spinner; newline if the stream didn't end at one |
 | `ToolStart` | `  ▸ <name> <dim brief>` |
 | `ToolEnd` | `  ✓ <secs>` on success; `  ✗ <secs> <note>` plus dimmed `preview` lines on failure |
 | `ReplayMessage` | extract `role == "user"` text messages into `history` so `↑/↓` recall works across resumes |
@@ -70,7 +71,7 @@ fn handle(…) {
 
 | event | when |
 |---|---|
-| `UserInput` | a non-command line was submitted (also swaps in the SIGINT-exit handler for the turn's duration) |
+| `UserInput` | a non-command line was submitted (also swaps in the SIGINT-cancel handler for the turn's duration) |
 | `ResetConversation` | `/clear` |
 | `Quit` | `/quit`, ctrl-d at an empty prompt, or EOF/SIGINT while blocked on stdin |
 
@@ -97,14 +98,15 @@ cursor), ctrl-d (delete forward; quit only on an empty line).
            → read_byte → None → EOF path → Quit ────┘   (plugins see the exit)
                               → repl.handle(Quit) → hub.quit()
 
- mid-turn (a turn started) install_sigint_exit_handler()
-   ctrl-c: an interrupt cannot unwind through the blocking LLM call, so the
-   handler restores termios and hard-exits with the conventional 130.
-   MessageEnd swaps the quit-style handler back in.
+ mid-turn (a turn started) install_sigint_cancel_handler()
+   ctrl-c: handler calls min_core::cancel() to signal cancellation to in-flight
+   LLM and tool requests. The blocked turn unwinds cleanly and returns to the
+   prompt. Returning to wait() reinstalls the prompt handler.
 ```
 
-This is why ctrl-c at the prompt goes through the bus (herdr gets to
-release, the session gets to close) and ctrl-c mid-turn does not.
+This is why ctrl-c at the prompt exits the app, while ctrl-c mid-turn cancels
+the in-flight LLM or tool requests and brings min back to the prompt waiting for
+the next command.
 
 ## Worked example
 
@@ -126,9 +128,9 @@ release, the session gets to close) and ctrl-c mid-turn does not.
 - `replay_message_populates_history_ignoring_tool_results_and_duplicates`.
 - `word_start` (ctrl-w) basics, trailing-whitespace eating, boundaries.
 - `cursor_col` is 1-based and character-counted across multi-byte input.
-- The SIGINT handler swap: mid-turn installs the exit handler, `MessageEnd`
-  restores the quit handler (pinning both directions without actually
-  raising SIGINT in tests).
+- The SIGINT handler swap: mid-turn installs the cancel handler, returning to
+  the prompt restores the quit handler, and `cancel_handler_sets_cancellation_flag`
+  pins `min_core::cancel()`.
 
 ## See also
 

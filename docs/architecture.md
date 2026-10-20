@@ -167,6 +167,7 @@ The catalogue — pure data, no behaviour:
 | `ResetConversation` | repl → everyone | (none) — context re-reads AGENTS.md, session re-rolls the id on it |
 | `ClearPromptSections` | context → agent | (none) — agent drops its collected sections |
 | `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
+| `TurnCancelled` | agent → everyone | (none) — in-flight turn was cancelled by user (Ctrl-C) |
 | `Quit` | repl → everyone | (none) — repl calls `hub.quit()` on it |
 
 ### Semantics

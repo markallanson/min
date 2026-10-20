@@ -130,5 +130,8 @@ pub struct ReplayExchange {
     pub reply: String,
 }
 
+/// The in-flight turn was cancelled by the user (agent/repl → everyone).
+pub struct TurnCancelled {}
+
 /// Shut down the harness (repl → everyone).
 pub struct Quit {}

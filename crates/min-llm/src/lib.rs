@@ -45,26 +45,93 @@ use std::time::Duration;
 
 mod google;
 
-/// The plugin: publishes the [`Llm`] service and greets the user.
-pub struct LlmPlugin;
+use min_core::llm::{ChatProvider, LlmRouter};
 
-impl Plugin for LlmPlugin {
-    fn name(&self) -> &'static str {
-        "llm"
-    }
+pub struct RouterPlugin;
 
+impl Plugin for RouterPlugin {
+    fn name(&self) -> &'static str { "llm-router" }
     fn start(&mut self, hub: &Hub) {
-        let llm = Llm::from_env();
-        if let Some(problem) = llm.auth.problem() {
-            hub.emit(events::Info { text: format!("warning: {problem}") });
-        }
-        let host = llm.base().split("//").nth(1).unwrap_or_default().to_string();
-        hub.emit(events::Info {
-            text: format!("{} @ {} — /help for commands", llm.model, host),
-        });
-        hub.set_service(llm);
+        hub.set_service(LlmRouter::default());
     }
 }
+
+pub struct AnthropicPlugin;
+impl Plugin for AnthropicPlugin {
+    fn name(&self) -> &'static str { "llm-anthropic" }
+    fn start(&mut self, hub: &Hub) {
+        if std::env::var("MIN_API").unwrap_or_default() == "anthropic" || std::env::var("MIN_API").is_err() {
+            if let Some(router) = hub.service::<LlmRouter>() {
+                let llm = Llm::from_env();
+                router.register(Box::new(llm));
+            }
+        }
+    }
+}
+
+pub struct OpenAiPlugin;
+impl Plugin for OpenAiPlugin {
+    fn name(&self) -> &'static str { "llm-openai" }
+    fn start(&mut self, hub: &Hub) {
+        if std::env::var("MIN_API").unwrap_or_default() == "openai" {
+            if let Some(router) = hub.service::<LlmRouter>() {
+                let llm = Llm::from_env();
+                router.register(Box::new(llm));
+            }
+        }
+    }
+}
+
+pub struct VertexPlugin;
+impl Plugin for VertexPlugin {
+    fn name(&self) -> &'static str { "llm-vertex" }
+    fn start(&mut self, hub: &Hub) {
+        if std::env::var("MIN_API").unwrap_or_default() == "vertex" {
+            if let Some(router) = hub.service::<LlmRouter>() {
+                let llm = Llm::from_env();
+                router.register(Box::new(llm));
+            }
+        }
+    }
+}
+
+pub struct ZaiPlugin;
+impl Plugin for ZaiPlugin {
+    fn name(&self) -> &'static str { "llm-zai" }
+    fn start(&mut self, hub: &Hub) {
+        if std::env::var("MIN_API").unwrap_or_default() == "zai" {
+            if let Some(router) = hub.service::<LlmRouter>() {
+                let llm = Llm::from_env();
+                router.register(Box::new(llm));
+            }
+        }
+    }
+}
+
+impl ChatProvider for Llm {
+    fn can_handle(&self, _model: &str) -> bool {
+        true
+    }
+
+    fn complete(
+        &self,
+        _model: &str,
+        system: &str,
+        messages_json: &str,
+        tools_json: &str,
+        on_delta: &mut dyn FnMut(&str),
+        on_thinking: &mut dyn FnMut(&str, &str),
+        on_status: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        let messages: Vec<Value> = serde_json::from_str(messages_json).unwrap_or_default();
+        let tools: Vec<Value> = serde_json::from_str(tools_json).unwrap_or_default();
+        
+        let result = self.complete_inner(system, &messages, &tools, on_delta, on_thinking, on_status)?;
+        Ok(serde_json::to_string(&result).unwrap_or_default())
+    }
+}
+
+
 
 /// A streaming chat client for exactly one configured endpoint.
 pub struct Llm {
@@ -133,7 +200,7 @@ impl Llm {
     /// the model streams non-text work (reasoning tokens or tool-call JSON);
     /// `on_status` receives human-readable retry progress.
     /// Returns the normalized message (see crate docs).
-    pub fn complete(
+    pub fn complete_inner(
         &self,
         system: &str,
         messages: &[Value],
@@ -142,6 +209,9 @@ impl Llm {
         on_thinking: &mut dyn FnMut(&str, &str),
         on_status: &mut dyn FnMut(&str),
     ) -> Result<Value, String> {
+        if min_core::is_cancelled() {
+            return Err("cancelled".into());
+        }
         if let Some(problem) = self.auth.problem() {
             return Err(problem);
         }
@@ -149,6 +219,9 @@ impl Llm {
         const SCHEDULE: [u64; 6] = [1, 2, 4, 8, 16, 32];
         let attempts = SCHEDULE.len();
         for attempt in 1..=attempts + 1 {
+            if min_core::is_cancelled() {
+                return Err("cancelled".into());
+            }
             let mut streamed = false;
             let mut delta = |t: &str| {
                 streamed = true;
@@ -158,6 +231,9 @@ impl Llm {
                 Ok(v) => return Ok(v),
                 Err(f) => f,
             };
+            if min_core::is_cancelled() {
+                return Err("cancelled".into());
+            }
             // A plan-mismatch 429 is not a rate limit — retrying won't help,
             // but the key may simply be provisioned on the mirror portal.
             if let Fail::Http { status: 429, body, .. } = &fail {
@@ -200,7 +276,15 @@ impl Llm {
                 "{} — retrying in {wait}s (attempt {attempt}/{attempts})",
                 fail.brief()
             ));
-            std::thread::sleep(Duration::from_secs(wait));
+            let deadline = std::time::Instant::now() + Duration::from_secs(wait);
+            while std::time::Instant::now() < deadline {
+                if min_core::is_cancelled() {
+                    return Err("cancelled".into());
+                }
+                std::thread::sleep(
+                    Duration::from_millis(50).min(deadline.saturating_duration_since(std::time::Instant::now())),
+                );
+            }
         }
         unreachable!()
     }
@@ -225,6 +309,13 @@ impl Llm {
                 let mut body = json!({"model": self.model, "max_tokens": self.max_tokens, "messages": wire, "stream": true});
                 if !fns.is_empty() {
                     body["tools"] = Value::Array(fns);
+                }
+                if self.api == "vertex" {
+                    let mut thinking = json!({"include_thoughts": true});
+                    if !self.model.contains("gemini-2.") {
+                        thinking["thinking_level"] = json!("HIGH");
+                    }
+                    body["extra_body"] = json!({"google": {"thinking_config": thinking}});
                 }
                 body
             }
@@ -279,10 +370,16 @@ impl Llm {
                 let retry_after = r.header("retry-after").and_then(|v| v.parse().ok());
                 return Err(Fail::Http { status: code, body: error_body(r), retry_after });
             }
-            Err(e) => return Err(Fail::Transport(e.to_string())),
+            Err(e) => {
+                if min_core::is_cancelled() {
+                    return Err(Fail::Stream("cancelled".into()));
+                }
+                return Err(Fail::Transport(e.to_string()));
+            }
         };
         let mut blocks = Blocks::default();
-        for line in BufReader::new(resp.into_reader()).lines() {
+        let cancel_reader = CancelReader::new(resp.into_reader());
+        for line in BufReader::new(cancel_reader).lines() {
             let line = line.map_err(|e| Fail::Stream(format!("stream failed: {e}")))?;
             let Some(data) = line.strip_prefix("data:") else { continue };
             let data = data.trim();
@@ -301,7 +398,41 @@ impl Llm {
                 break;
             }
         }
+        if min_core::is_cancelled() {
+            return Err(Fail::Stream("cancelled".into()));
+        }
         Ok(blocks.finish())
+    }
+}
+
+struct CancelReader<R> {
+    inner: R,
+}
+
+impl<R> CancelReader<R> {
+    fn new(inner: R) -> Self {
+        CancelReader { inner }
+    }
+}
+
+impl<R: Read> Read for CancelReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if min_core::is_cancelled() {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "cancelled"));
+        }
+        match self.inner.read(buf) {
+            Ok(n) => {
+                if min_core::is_cancelled() {
+                    Err(std::io::Error::new(std::io::ErrorKind::Other, "cancelled"))
+                } else {
+                    Ok(n)
+                }
+            }
+            Err(e) if min_core::is_cancelled() || e.kind() == std::io::ErrorKind::Interrupted => {
+                Err(std::io::Error::new(std::io::ErrorKind::Other, "cancelled"))
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -378,8 +509,12 @@ fn parse_openai_chunk(
     }
     if let Some(t) = delta["content"].as_str() {
         if !t.is_empty() {
-            b.append_text(t);
-            on_delta(t);
+            if delta["extra_content"]["google"]["thought"].as_bool() == Some(true) {
+                on_thinking(t, "");
+            } else {
+                b.append_text(t);
+                on_delta(t);
+            }
         }
     }
     if let Some(calls) = delta["tool_calls"].as_array() {
@@ -678,6 +813,9 @@ fn error_body(r: ureq::Response) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn blocks_finish_normalizes() {
@@ -749,6 +887,31 @@ mod tests {
             vertex_base("p1", "europe-west4"),
             "https://europe-west4-aiplatform.googleapis.com/v1/projects/p1/locations/europe-west4/endpoints/openapi"
         );
+    }
+
+    #[test]
+    fn vertex_body_requests_thoughts() {
+        let make = |api: &'static str, model: &str| Llm {
+            http: ureq::Agent::new(),
+            api,
+            base: RefCell::new(String::new()),
+            mirror: None,
+            mirrored: Cell::new(false),
+            auth: Auth::Key("k".into()),
+            model: model.into(),
+            max_tokens: 1024,
+        };
+        let b25 = make("vertex", "google/gemini-2.5-pro").build_body("sys", &[], &[]);
+        assert_eq!(b25["extra_body"]["google"]["thinking_config"], json!({"include_thoughts": true}));
+
+        let b4 = make("vertex", "google/gemini-4-argon").build_body("sys", &[], &[]);
+        assert_eq!(
+            b4["extra_body"]["google"]["thinking_config"],
+            json!({"include_thoughts": true, "thinking_level": "HIGH"})
+        );
+
+        let oai = make("openai", "gpt-4o").build_body("sys", &[], &[]);
+        assert!(oai.get("extra_body").is_none());
     }
 
     #[test]
@@ -829,17 +992,71 @@ mod tests {
             .unwrap();
         };
         run(json!({"choices": [{"delta": {"reasoning_content": "step 1"}}]}));
+        // Vertex/Gemini streams thought summaries in delta.content with extra_content.google.thought = true.
+        run(json!({"choices": [{"delta": {"content": "step 2", "extra_content": {"google": {"thought": true}}}}]}));
         run(json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "bash", "arguments": "{\"c"}}]}}]}));
         // Subsequent argument chunks omit the function name, but the callback still carries it.
         run(json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "md\":\"ls\"}"}}]}}]}));
         assert!(deltas.is_empty());
+        assert_eq!(b.text, "");
         assert_eq!(
             thoughts,
             vec![
                 ("step 1".into(), "".into()),
+                ("step 2".into(), "".into()),
                 ("".into(), "bash".into()),
                 ("".into(), "bash".into()),
             ]
         );
+    }
+
+    #[test]
+    fn cancel_reader_aborts_on_cancellation_or_interrupted() {
+        use std::io::Cursor;
+        let _guard = LOCK.lock().unwrap();
+
+        min_core::reset_cancel();
+        let data = Cursor::new(b"hello world\n");
+        let mut reader = CancelReader::new(data);
+        let mut buf = [0u8; 5];
+        assert_eq!(reader.read(&mut buf).unwrap(), 5);
+        assert_eq!(&buf, b"hello");
+
+        // Cancel mid-stream: next read fails
+        min_core::cancel();
+        assert!(reader.read(&mut buf).is_err());
+        assert_eq!(reader.read(&mut buf).unwrap_err().to_string(), "cancelled");
+        min_core::reset_cancel();
+    }
+
+    #[test]
+    fn complete_aborts_immediately_if_cancelled() {
+        let _guard = LOCK.lock().unwrap();
+
+        min_core::cancel();
+        let llm = Llm {
+            http: ureq::Agent::new(),
+            api: "anthropic",
+            base: RefCell::new("https://api.anthropic.com".into()),
+            mirror: None,
+            mirrored: Cell::new(false),
+            auth: Auth::Key("test-key".into()),
+            model: "claude".into(),
+            max_tokens: 1024,
+        };
+        let mut deltas = Vec::new();
+        let mut thoughts = Vec::new();
+        let mut status = Vec::new();
+        let res = llm.complete_inner(
+            "sys",
+            &[],
+            &[],
+            &mut |d| deltas.push(d.to_string()),
+            &mut |t, tl| thoughts.push((t.to_string(), tl.to_string())),
+            &mut |s| status.push(s.to_string()),
+        );
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(), "cancelled");
+        min_core::reset_cancel();
     }
 }

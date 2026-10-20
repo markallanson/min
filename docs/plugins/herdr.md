@@ -46,7 +46,7 @@ stable `custom:min` source (e.g. across `/clear`).
 
 Herdr understands three states; each is wired to one min event. Plugin-level:
 
-**Listens:** `SessionStart`, `SessionEnd`, `UserInput`, `MessageEnd`,
+**Listens:** `SessionStart`, `SessionEnd`, `UserInput`, `MessageEnd`, `TurnCancelled`,
 `Error`, `Quit` — everything else is ignored (`handle` runs for each event,
 but the `cfg` gate makes it a no-op outside Herdr).
 
@@ -60,7 +60,7 @@ The mapping, event → herdr state:
 | `start` | `idle` — registers the agent so the pane shows min from launch (Herdr only tracks an agent after its first report). No session id exists yet, so this report carries no `--agent-session-id`. |
 | `SessionStart` | re-report of the *current* state, now tagged `--agent-session-id` — `/clear` changes no state, but the replacement id must be associated. The startup announcement comes from the session plugin's first `wait`, so it always reaches this plugin. |
 | `UserInput` | `working` |
-| `MessageEnd` | `idle` |
+| `MessageEnd` / `TurnCancelled` | `idle` |
 | `Error` | `blocked` |
 | `SessionEnd` | forget the id (no report) |
 | `Quit` | release — hand lifecycle authority back to Herdr |

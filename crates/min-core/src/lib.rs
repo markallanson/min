@@ -30,6 +30,8 @@
 #![forbid(unsafe_code)]
 
 use std::any::{Any, TypeId};
+pub mod llm;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::HashMap;
 
@@ -284,4 +286,18 @@ mod tests {
         assert!(hub.tools().run("nope", "").is_err());
         assert_eq!(hub.tools().specs()[0].0, "hi");
     }
+}
+
+static CANCELLED: AtomicBool = AtomicBool::new(false);
+
+pub fn cancel() {
+    CANCELLED.store(true, Ordering::SeqCst);
+}
+
+pub fn is_cancelled() -> bool {
+    CANCELLED.load(Ordering::SeqCst)
+}
+
+pub fn reset_cancel() {
+    CANCELLED.store(false, Ordering::SeqCst);
 }
