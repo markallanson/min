@@ -24,7 +24,8 @@
 //! Environment:
 //! - `MIN_API`            dialect or endpoint alias: `"anthropic"` (default),
 //!                        `"openai"`, `"zai"` (Z.ai coding plan), `"openrouter"`,
-//!                        `"vertex"` (Gemini on Vertex AI, Google ADC auth)
+//!                        `"vertex"` (Gemini on Vertex AI, Google ADC auth),
+//!                        `"ollama"` (native `/api/chat`, no key needed)
 //! - `MIN_BASE_URL`       overrides the endpoint an alias picks (default
 //!                        `https://api.anthropic.com`)
 //! - `MIN_MODEL`          overrides the model an alias picks
@@ -35,6 +36,9 @@
 //! - `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION`  Vertex project and
 //!                        region (default `global`); credentials come from
 //!                        Application Default Credentials (see [`google`])
+//! - `OLLAMA_HOST`        Ollama server (default `http://localhost:11434`)
+//! - `OLLAMA_API_KEY`     optional bearer token for a remote Ollama
+//! - `MIN_NUM_CTX`        Ollama context window (default `32768`)
 //! - `HTTPS_PROXY`        optional outbound proxy
 
 use min_core::{events, Hub, Plugin};
@@ -108,6 +112,19 @@ impl Plugin for ZaiPlugin {
     }
 }
 
+pub struct OllamaPlugin;
+impl Plugin for OllamaPlugin {
+    fn name(&self) -> &'static str { "llm-ollama" }
+    fn start(&mut self, hub: &Hub) {
+        if std::env::var("MIN_API").unwrap_or_default() == "ollama" {
+            if let Some(router) = hub.service::<LlmRouter>() {
+                let llm = Llm::from_env();
+                router.register(Box::new(llm));
+            }
+        }
+    }
+}
+
 impl ChatProvider for Llm {
     fn can_handle(&self, _model: &str) -> bool {
         true
@@ -145,6 +162,8 @@ pub struct Llm {
     auth: Auth,
     pub model: String,
     max_tokens: u64,
+    /// Ollama's `options.num_ctx` — its server default silently truncates long prompts.
+    num_ctx: u64,
 }
 
 impl Llm {
@@ -161,6 +180,7 @@ impl Llm {
         let (api, base_default, model_default) = resolve_api(&spec);
         let mut key_names: Vec<&str> = match api {
             "openai" => vec!["MIN_API_KEY", "OPENAI_API_KEY"],
+            "ollama" => vec!["MIN_API_KEY", "OLLAMA_API_KEY"],
             _ => vec!["ANTHROPIC_API_KEY"],
         };
         if spec == "zai" {
@@ -170,6 +190,12 @@ impl Llm {
         let mut base_default = base_default.to_string();
         if api == "vertex" {
             (auth, base_default) = vertex_setup();
+        }
+        if api == "ollama" {
+            if matches!(&auth, Auth::Key(k) if k.is_empty()) {
+                auth = Auth::None;
+            }
+            base_default = ollama_base(&std::env::var("OLLAMA_HOST").unwrap_or_default());
         }
         let base = std::env::var("MIN_BASE_URL").unwrap_or_default();
         let base = {
@@ -191,6 +217,10 @@ impl Llm {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(16384),
+            num_ctx: std::env::var("MIN_NUM_CTX")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(32768),
         }
     }
 
@@ -296,16 +326,7 @@ impl Llm {
                 for m in messages {
                     wire.extend(to_openai_messages(m));
                 }
-                let fns: Vec<Value> = tools
-                    .iter()
-                    .map(|t| {
-                        json!({"type": "function", "function": {
-                            "name": t["name"],
-                            "description": t["description"],
-                            "parameters": t["input_schema"],
-                        }})
-                    })
-                    .collect();
+                let fns: Vec<Value> = tools.iter().map(to_function).collect();
                 let mut body = json!({"model": self.model, "max_tokens": self.max_tokens, "messages": wire, "stream": true});
                 if !fns.is_empty() {
                     body["tools"] = Value::Array(fns);
@@ -316,6 +337,21 @@ impl Llm {
                         thinking["thinking_level"] = json!("HIGH");
                     }
                     body["extra_body"] = json!({"google": {"thinking_config": thinking}});
+                }
+                body
+            }
+            "ollama" => {
+                let mut wire: Vec<Value> = vec![json!({"role": "system", "content": system})];
+                let mut names = std::collections::HashMap::new();
+                for m in messages {
+                    wire.extend(to_ollama_messages(m, &mut names));
+                }
+                let mut body = json!({
+                    "model": self.model, "messages": wire, "stream": true,
+                    "options": {"num_ctx": self.num_ctx, "num_predict": self.max_tokens},
+                });
+                if !tools.is_empty() {
+                    body["tools"] = Value::Array(tools.iter().map(to_function).collect());
                 }
                 body
             }
@@ -348,6 +384,7 @@ impl Llm {
         let base = self.base();
         let url = match self.api {
             "openai" | "vertex" => format!("{base}/chat/completions"),
+            "ollama" => format!("{base}/api/chat"),
             _ => format!("{base}/v1/messages"),
         };
         let mut req = self.http.post(&url);
@@ -360,7 +397,8 @@ impl Llm {
                     None => req,
                 }
             }
-            (Auth::Key(k), "openai") => req.set("Authorization", &format!("Bearer {k}")),
+            (Auth::Key(k), "openai" | "ollama") => req.set("Authorization", &format!("Bearer {k}")),
+            (Auth::None, _) => req,
             (Auth::Key(k), _) => req.set("x-api-key", k).set("anthropic-version", "2023-06-01"),
             (Auth::Unusable(e), _) => return Err(Fail::Auth(e.clone())),
         };
@@ -381,7 +419,12 @@ impl Llm {
         let cancel_reader = CancelReader::new(resp.into_reader());
         for line in BufReader::new(cancel_reader).lines() {
             let line = line.map_err(|e| Fail::Stream(format!("stream failed: {e}")))?;
-            let Some(data) = line.strip_prefix("data:") else { continue };
+            // Ollama streams bare NDJSON; the others use SSE `data:` lines.
+            let data = match (self.api, line.strip_prefix("data:")) {
+                ("ollama", _) => line.as_str(),
+                (_, Some(d)) => d,
+                (_, None) => continue,
+            };
             let data = data.trim();
             if data.is_empty() {
                 continue;
@@ -392,6 +435,7 @@ impl Llm {
             let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
             match self.api {
                 "openai" | "vertex" => parse_openai_chunk(&v, &mut blocks, on_delta, on_thinking).map_err(Fail::Stream)?,
+                "ollama" => parse_ollama_chunk(&v, &mut blocks, on_delta, on_thinking).map_err(Fail::Stream)?,
                 _ => parse_anthropic_chunk(&v, &mut blocks, on_delta, on_thinking).map_err(Fail::Stream)?,
             }
             if blocks.done {
@@ -552,6 +596,50 @@ fn parse_openai_chunk(
     Ok(())
 }
 
+/// One Ollama `/api/chat` NDJSON line. Unlike the OpenAI dialect, tool
+/// calls arrive whole (arguments already an object) rather than as fragments.
+fn parse_ollama_chunk(
+    v: &Value,
+    b: &mut Blocks,
+    on_delta: &mut dyn FnMut(&str),
+    on_thinking: &mut dyn FnMut(&str, &str),
+) -> Result<(), String> {
+    if let Some(err) = v["error"].as_str() {
+        return Err(err.to_string());
+    }
+    let msg = &v["message"];
+    if let Some(t) = msg["thinking"].as_str() {
+        if !t.is_empty() {
+            on_thinking(t, "");
+        }
+    }
+    if let Some(t) = msg["content"].as_str() {
+        if !t.is_empty() {
+            b.append_text(t);
+            on_delta(t);
+        }
+    }
+    if let Some(calls) = msg["tool_calls"].as_array() {
+        for call in calls {
+            let name = call["function"]["name"].as_str().unwrap_or_default();
+            b.push_tool(call["id"].as_str().unwrap_or_default(), name);
+            b.append_json(&call["function"]["arguments"].to_string());
+            on_thinking("", name);
+        }
+    }
+    if v["done"].as_bool() == Some(true) {
+        // Ollama reports `stop` even when the turn ended in tool calls.
+        b.stop_reason = match v["done_reason"].as_str() {
+            _ if !b.tools.is_empty() => "tool_use",
+            Some("length") => "max_tokens",
+            _ => "end_turn",
+        }
+        .into();
+        b.done = true;
+    }
+    Ok(())
+}
+
 /// `MIN_API` selectors: a wire dialect or an alias for a well-known
 /// OpenAI-compatible endpoint. Returns `(dialect, base url, default model)` —
 /// `MIN_BASE_URL` / `MIN_MODEL` still override the alias's picks.
@@ -563,6 +651,8 @@ fn resolve_api(spec: &str) -> (&'static str, &'static str, &'static str) {
         // Vertex's OpenAI-compatible endpoint; the base depends on project and
         // region, so `vertex_setup` fills it in.
         "vertex" | "vertexai" => ("vertex", "", "google/gemini-2.5-pro"),
+        // The base honours `OLLAMA_HOST`, so `from_env` fills it in.
+        "ollama" => ("ollama", "", "qwen3-coder"),
         _ => ("anthropic", "https://api.anthropic.com", "claude-sonnet-4-5"),
     }
 }
@@ -571,6 +661,8 @@ fn resolve_api(spec: &str) -> (&'static str, &'static str, &'static str) {
 enum Auth {
     /// A static API key (may be empty — reported as a problem).
     Key(String),
+    /// No credentials at all (a local Ollama).
+    None,
     /// Google Application Default Credentials, for Vertex AI.
     Google(google::Adc),
     /// Configuration that can't work, with the reason.
@@ -608,6 +700,17 @@ fn vertex_setup() -> (Auth, String) {
     let location = first_env(&["GOOGLE_CLOUD_LOCATION", "GOOGLE_CLOUD_REGION"]);
     let location = if location.is_empty() { "global".to_string() } else { location };
     (Auth::Google(adc), vertex_base(&project, &location))
+}
+
+/// Ollama's base URL from `OLLAMA_HOST`, which is often a bare `host:port`.
+fn ollama_base(host: &str) -> String {
+    let host = host.trim().trim_end_matches('/');
+    match host {
+        "" => "http://localhost:11434".into(),
+        h if h.contains("://") => h.into(),
+        h if h.contains(':') => format!("http://{h}"),
+        h => format!("http://{h}:11434"),
+    }
 }
 
 /// Vertex AI's OpenAI-compatible endpoint for a project and region.
@@ -746,6 +849,41 @@ impl Blocks {
     }
 }
 
+/// A min tool spec as an OpenAI/Ollama `function` tool.
+fn to_function(t: &Value) -> Value {
+    json!({"type": "function", "function": {
+        "name": t["name"],
+        "description": t["description"],
+        "parameters": t["input_schema"],
+    }})
+}
+
+/// Convert one Anthropic-style history message to Ollama wire message(s):
+/// the OpenAI shape, but with tool arguments as objects and tool results
+/// keyed by `tool_name` (looked up via `names`, tool_use id → name).
+fn to_ollama_messages(m: &Value, names: &mut std::collections::HashMap<String, String>) -> Vec<Value> {
+    let mut out = to_openai_messages(m);
+    for msg in &mut out {
+        if let Some(calls) = msg["tool_calls"].as_array_mut() {
+            for call in calls {
+                let f = &mut call["function"];
+                let args = f["arguments"].as_str().and_then(|a| serde_json::from_str(a).ok());
+                f["arguments"] = args.unwrap_or_else(|| json!({}));
+                if let (Some(id), Some(name)) = (call["id"].as_str(), call["function"]["name"].as_str()) {
+                    names.insert(id.into(), name.into());
+                }
+            }
+        }
+        if msg["role"] == "tool" {
+            let name = msg["tool_call_id"].as_str().and_then(|id| names.get(id)).cloned();
+            if let Some(name) = name {
+                msg["tool_name"] = json!(name);
+            }
+        }
+    }
+    out
+}
+
 /// Convert one Anthropic-style history message to OpenAI wire message(s).
 fn to_openai_messages(m: &Value) -> Vec<Value> {
     let role = m["role"].as_str().unwrap_or("user");
@@ -803,6 +941,8 @@ fn error_body(r: ureq::Response) -> String {
             v["error"]["message"]
                 .as_str()
                 .or_else(|| v["message"].as_str())
+                // Ollama: {"error": "model \"x\" not found"}
+                .or_else(|| v["error"].as_str())
                 // Vertex wraps errors in an array: [{"error": {…}}]
                 .or_else(|| v[0]["error"]["message"].as_str())
                 .map(String::from)
@@ -878,6 +1018,78 @@ mod tests {
     }
 
     #[test]
+    fn ollama_hosts_resolve() {
+        assert_eq!(resolve_api("ollama"), ("ollama", "", "qwen3-coder"));
+        assert_eq!(ollama_base(""), "http://localhost:11434");
+        assert_eq!(ollama_base("0.0.0.0:9999"), "http://0.0.0.0:9999");
+        assert_eq!(ollama_base("gpu-box"), "http://gpu-box:11434");
+        assert_eq!(ollama_base("https://ollama.example.com/"), "https://ollama.example.com");
+    }
+
+    #[test]
+    fn ollama_body_uses_native_shapes() {
+        let llm = Llm {
+            http: ureq::Agent::new(),
+            api: "ollama",
+            base: RefCell::new(String::new()),
+            mirror: None,
+            mirrored: Cell::new(false),
+            auth: Auth::None,
+            model: "qwen3-coder".into(),
+            max_tokens: 1024,
+            num_ctx: 65536,
+        };
+        assert!(llm.auth.problem().is_none());
+        let history = vec![
+            json!({"role": "user", "content": "list files"}),
+            json!({"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_0", "name": "bash", "input": {"command": "ls"}}]}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_0", "content": "a.txt"}]}),
+        ];
+        let tools = vec![json!({"name": "bash", "description": "run", "input_schema": {"type": "object"}})];
+        let b = llm.build_body("sys", &history, &tools);
+        assert_eq!(b["options"], json!({"num_ctx": 65536, "num_predict": 1024}));
+        assert_eq!(b["messages"][0], json!({"role": "system", "content": "sys"}));
+        assert_eq!(b["messages"][2]["tool_calls"][0]["function"]["arguments"], json!({"command": "ls"}));
+        assert_eq!(b["messages"][3]["role"], "tool");
+        assert_eq!(b["messages"][3]["tool_name"], "bash");
+        assert_eq!(b["tools"][0]["function"]["name"], "bash");
+        assert!(b.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn ollama_chunks_normalize() {
+        let mut b = Blocks::default();
+        let mut deltas = Vec::new();
+        let mut thoughts: Vec<(String, String)> = Vec::new();
+        let mut run = |v: Value, b: &mut Blocks| {
+            parse_ollama_chunk(&v, b, &mut |t| deltas.push(t.to_string()), &mut |t, tl| {
+                thoughts.push((t.into(), tl.into()))
+            })
+        };
+        run(json!({"message": {"role": "assistant", "content": "", "thinking": "hmm"}, "done": false}), &mut b).unwrap();
+        run(json!({"message": {"role": "assistant", "content": "ok"}, "done": false}), &mut b).unwrap();
+        run(json!({"message": {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "bash", "arguments": {"command": "ls"}}}]}, "done": false}), &mut b).unwrap();
+        run(json!({"message": {"role": "assistant", "content": ""}, "done": true, "done_reason": "stop"}), &mut b).unwrap();
+        assert!(b.done);
+        let v = b.finish();
+        assert_eq!(v["stop_reason"], "tool_use");
+        assert_eq!(v["content"][0]["text"], "ok");
+        assert_eq!(v["content"][1]["id"], "call_0");
+        assert_eq!(v["content"][1]["input"]["command"], "ls");
+        assert_eq!(deltas, vec!["ok"]);
+        assert_eq!(thoughts, vec![("hmm".into(), "".into()), ("".into(), "bash".into())]);
+
+        let mut b = Blocks::default();
+        let quiet = |v: Value, b: &mut Blocks| parse_ollama_chunk(&v, b, &mut |_| {}, &mut |_, _| {});
+        quiet(json!({"message": {"content": "x"}, "done": true, "done_reason": "length"}), &mut b).unwrap();
+        assert_eq!(b.finish()["stop_reason"], "max_tokens");
+        assert_eq!(quiet(json!({"error": "model not found"}), &mut b).unwrap_err(), "model not found");
+    }
+
+    #[test]
     fn vertex_endpoints() {
         assert_eq!(
             vertex_base("p1", "global"),
@@ -900,6 +1112,7 @@ mod tests {
             auth: Auth::Key("k".into()),
             model: model.into(),
             max_tokens: 1024,
+            num_ctx: 32768,
         };
         let b25 = make("vertex", "google/gemini-2.5-pro").build_body("sys", &[], &[]);
         assert_eq!(b25["extra_body"]["google"]["thinking_config"], json!({"include_thoughts": true}));
@@ -1043,6 +1256,7 @@ mod tests {
             auth: Auth::Key("test-key".into()),
             model: "claude".into(),
             max_tokens: 1024,
+            num_ctx: 32768,
         };
         let mut deltas = Vec::new();
         let mut thoughts = Vec::new();

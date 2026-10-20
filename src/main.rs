@@ -108,6 +108,7 @@ fn main() {
         Box::new(min_llm::OpenAiPlugin),         // OpenAI provider
         Box::new(min_llm::VertexPlugin),         // Vertex provider
         Box::new(min_llm::ZaiPlugin),            // Zai provider
+        Box::new(min_llm::OllamaPlugin),         // Ollama provider
         Box::new(min_tools_fs::FsPlugin),        // read / edit / write
         Box::new(min_tools_shell::ShellPlugin),  // bash
         Box::new(min_tools_clock::ClockPlugin),  // current UTC time

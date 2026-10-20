@@ -49,9 +49,17 @@ export MIN_API_KEY=...
 export MIN_MODEL=<model>                           # whatever it serves
 ```
 
+Ollama, local or on ollama.com (native `/api/chat`, no key needed locally):
+
+```sh
+export MIN_API=ollama
+export MIN_MODEL=qwen3-coder                       # any tool-capable model
+# export OLLAMA_HOST=https://ollama.com OLLAMA_API_KEY=...   # cloud models
+```
+
 | env var | default | meaning |
 |---|---|---|
-| `MIN_API` | `anthropic` | `anthropic` · `openai` · `zai` (Z.ai coding plan) · `openrouter` · `vertex` (Gemini on Vertex AI) — an alias sets dialect + base URL + default model |
+| `MIN_API` | `anthropic` | `anthropic` · `openai` · `zai` (Z.ai coding plan) · `openrouter` · `vertex` (Gemini on Vertex AI) · `ollama` (local or ollama.com) — an alias sets dialect + base URL + default model |
 | `MIN_BASE_URL` | `https://api.anthropic.com` | API base URL (overrides the alias's choice) |
 | `MIN_MODEL` | `claude-sonnet-4-5` | model name (overrides the alias's choice) |
 | `MIN_MAX_TOKENS` | `16384` | max output tokens |
