@@ -63,6 +63,7 @@ discriminator:
 | `ConversationMessage` | `{"type":"message","role":"user"\|"assistant","content":...}` |
 | `ToolStart` | `{"type":"tool","name":"<name>","brief":"<brief>"}` |
 | `ToolEnd` | `{"type":"tool_end","ok":<bool>,"secs":<f64>,"note":"<note>"}` |
+| `LlmStart` | `{"type":"llm_start","round":<n>,"model":"<model>","messages":<n>,"tools":<n>}` |
 | `Usage` | `{"type":"usage","round":<n>,"model":"<model>","input_tokens":<n>,"output_tokens":<n>,"cache_read_tokens":<n>,"cache_write_tokens":<n>}` |
 | `Info` | `{"type":"info","text":"<text>"}` |
 | `Error` | `{"type":"error","text":"<text>"}` |
@@ -109,6 +110,7 @@ discriminator:
 | `SystemPromptSection` | write `{"type":"instructions",...}` (or buffer until `SessionStart` if emitted during `start`) |
 | `ConversationMessage` | write `{"type":"message","role":...,"content":...}` |
 | `ToolStart` / `ToolEnd` | write `{"type":"tool",...}` / `{"type":"tool_end",...}` |
+| `LlmStart` | write `{"type":"llm_start","round":...,"model":...,"messages":...,"tools":...}` — the request about to be made |
 | `Usage` | write `{"type":"usage","round":...,"model":...,"input_tokens":...,"output_tokens":...,"cache_read_tokens":...,"cache_write_tokens":...}` — one record per LLM request |
 | `Info` / `Error` | write `{"type":"info",...}` / `{"type":"error",...}` |
 | `TurnCancelled` | write `{"type":"info","text":"turn cancelled by user"}` |

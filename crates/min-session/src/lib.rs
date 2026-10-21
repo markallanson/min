@@ -323,6 +323,19 @@ impl Plugin for SessionPlugin {
                 "secs": e.secs,
                 "note": e.note,
             }));
+        } else if let Some(e) = event.downcast_ref::<events::LlmStart>() {
+            // The request that is about to be made. The `usage` record
+            // below says what it cost; this says what was asked — how big
+            // the conversation had grown, and how much the model was
+            // offered. A turn that fails or is cancelled still leaves
+            // this behind, so the log shows the request that was made.
+            self.write_json(&json!({
+                "type": "llm_start",
+                "round": e.round,
+                "model": e.model,
+                "messages": e.messages,
+                "tools": e.tools,
+            }));
         } else if let Some(e) = event.downcast_ref::<events::Usage>() {
             // One record per request — the session log is the long-term
             // record of what the session cost.
@@ -922,6 +935,15 @@ mod tests {
         );
         p.handle(
             &hub,
+            &events::LlmStart {
+                round: 1,
+                model: "test-model".into(),
+                messages: 4,
+                tools: 7,
+            },
+        );
+        p.handle(
+            &hub,
             &events::Usage {
                 usage: min_core::usage::TokenUsage {
                     input_tokens: 120,
@@ -936,7 +958,7 @@ mod tests {
         p.handle(&hub, &events::SessionEnd { id: "5-five".into() });
 
         let lines = jsonl_of(&dir, "5-five");
-        assert_eq!(lines.len(), 10);
+        assert_eq!(lines.len(), 11);
         assert_eq!(lines[0]["type"], "session_start");
         assert_eq!(lines[0]["id"], "5-five");
         assert_eq!(lines[0]["parent"], "4-four");
@@ -967,12 +989,17 @@ mod tests {
         assert_eq!(lines[7], json!({"type": "error", "text": "boom"}));
         assert_eq!(
             lines[8],
+            json!({"type": "llm_start", "round": 1, "model": "test-model",
+                   "messages": 4, "tools": 7})
+        );
+        assert_eq!(
+            lines[9],
             json!({"type": "usage", "round": 1, "model": "test-model",
                    "input_tokens": 120, "output_tokens": 8,
                    "cache_read_tokens": 30, "cache_write_tokens": 0})
         );
-        assert_eq!(lines[9]["type"], "session_end");
-        assert!(lines[9]["ts"].is_u64());
+        assert_eq!(lines[10]["type"], "session_end");
+        assert!(lines[10]["ts"].is_u64());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
