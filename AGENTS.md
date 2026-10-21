@@ -29,7 +29,12 @@ Rules when changing this codebase:
   workspace-wide (`[workspace.lints.cargo]` in the root `Cargo.toml`), so
   `cargo +nightly check --workspace --all-targets` reports a dependency
   nothing imports. On stable the lint is a no-op, so run the nightly form
-  before adding or removing a dependency. `cargo machete --fix` removes
-  unused ones automatically; a dependency used only by a test belongs in
-  `[dev-dependencies]`.
+  before adding or removing a dependency. A dependency used only by a test
+  belongs in `[dev-dependencies]`.
+- A pre-commit hook (`.githooks/pre-commit`) runs `cargo machete --fix`, so
+  an unused dependency is stripped and staged with the commit. It is enabled
+  by `git config core.hooksPath .githooks` — a local setting, so run that
+  once after cloning. The hook needs `cargo-machete`
+  (`cargo install cargo-machete --locked`); without it the hook skips with
+  a note.
 - Conventional commits (`feat:`, `fix:`, `docs:` …).

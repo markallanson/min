@@ -1,0 +1,76 @@
+#!/bin/sh
+# Pre-commit hook: strip dependencies nothing imports.
+#
+# `cargo machete --fix` rewrites the manifests in place, removing any
+# dependency the crate's own code never references. The same check is
+# enabled workspace-wide as a cargo lint
+# ([workspace.lints.cargo] unused_crate_dependencies), so this is the
+# automated half of that rule — see AGENTS.md.
+#
+# Behaviour:
+#   * no cargo-machete installed  -> warn, skip, allow the commit
+#   * nothing to fix               -> silent, allow the commit
+#   * something fixed              -> verify the build still passes, stage
+#                                     the change, allow the commit
+#   * the fix broke the build      -> restore the manifests exactly as they
+#                                     were, refuse the commit
+#
+# Install with:  git config core.hooksPath .githooks
+
+set -e
+
+root=$(git rev-parse --show-toplevel)
+cd "$root" || exit 1
+
+if ! command -v cargo-machete >/dev/null 2>&1 && ! cargo machete --version >/dev/null 2>&1; then
+    echo "pre-commit: cargo-machete not installed — skipping the unused-dependency check."
+    echo "pre-commit: install it with: cargo install cargo-machete --locked"
+    exit 0
+fi
+
+# The manifests this hook may touch. Matching the pathspec the same way
+# everywhere keeps "snapshot", "diff" and "restore" in agreement.
+MANIFESTS='Cargo.toml crates/*/Cargo.toml'
+
+# Snapshot the working-tree manifests so a failed fix can be undone
+# exactly — including edits the user had not staged.
+snapshot=$(mktemp -d)
+trap 'rm -rf "$snapshot"' EXIT
+for f in $MANIFESTS; do
+    [ -f "$f" ] || continue
+    mkdir -p "$snapshot/$(dirname "$f")"
+    cp "$f" "$snapshot/$f"
+done
+
+before=$(git status --porcelain -- $MANIFESTS)
+
+# machete exits non-zero when it finds something to remove; that is the
+# normal path, so the status is deliberately ignored.
+cargo machete --fix >/dev/null 2>&1 || true
+
+after=$(git status --porcelain -- $MANIFESTS)
+
+if [ "$before" = "$after" ]; then
+    exit 0
+fi
+
+echo "pre-commit: removed unused dependencies:"
+git diff --unified=0 -- $MANIFESTS | grep -E '^-[^-]' || true
+
+# The removal must not break the build. If it does, put the manifests back
+# byte for byte and refuse the commit.
+if ! cargo check --workspace --all-targets >/dev/null 2>&1; then
+    echo "pre-commit: the removal broke the build — restoring the manifests."
+    for f in $MANIFESTS; do
+        [ -f "$f" ] || continue
+        if [ -f "$snapshot/$f" ]; then
+            cp "$snapshot/$f" "$f"
+        fi
+    done
+    exit 1
+fi
+
+# Stage the fix so it goes in with the commit.
+git add -- $MANIFESTS
+echo "pre-commit: staged the cleaned manifests."
+exit 0

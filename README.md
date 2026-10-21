@@ -120,6 +120,18 @@ min already has the minimum to grow itself: it can read its own source,
 edit it (exact-match edits), and run `cargo build` / `cargo test`. Run it
 from this repository and ask it to add a plugin.
 
+## Working on min
+
+```sh
+git config core.hooksPath .githooks   # enables the pre-commit hook
+cargo install cargo-machete --locked  # the hook uses it
+```
+
+The pre-commit hook runs `cargo machete --fix`, so a dependency nothing
+imports is stripped and staged with the commit. The same check is a cargo
+lint (`[workspace.lints.cargo] unused_crate_dependencies`), so
+`cargo +nightly check --workspace --all-targets` reports it too.
+
 ## Limitations (on purpose, for now)
 
 - no context-window compaction
