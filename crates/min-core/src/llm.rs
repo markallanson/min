@@ -19,6 +19,13 @@ pub struct Callbacks<'a> {
 pub trait ChatProvider: Any {
     fn can_handle(&self, model: &str) -> bool;
 
+    /// The model this provider will actually ask for.
+    ///
+    /// The provider owns the model: it resolves `MIN_MODEL` against the
+    /// endpoint's default. A consumer must not invent a name of its own —
+    /// it would report a model that was never used.
+    fn model(&self) -> &str;
+
     fn complete(
         &self,
         model: &str,
@@ -37,6 +44,16 @@ pub struct LlmRouter {
 impl LlmRouter {
     pub fn register(&self, provider: Box<dyn ChatProvider>) {
         self.providers.borrow_mut().push(provider);
+    }
+
+    /// The model the routed provider will actually use, if one is
+    /// registered. Consumers report *this* — never a name they made up.
+    pub fn model(&self) -> Option<String> {
+        let providers = self.providers.borrow();
+        providers
+            .iter()
+            .find(|p| p.can_handle(""))
+            .map(|p| p.model().to_string())
     }
 
     pub fn complete(

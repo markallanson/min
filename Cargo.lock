@@ -244,7 +244,6 @@ name = "min-agent"
 version = "0.1.0"
 dependencies = [
  "min-core",
- "min-llm",
  "serde_json",
 ]
 

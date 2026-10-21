@@ -19,6 +19,7 @@ never cares which wire format is in use:
 | shape | **provider** — publishes a service; listens to nothing |
 | tools offered | none |
 | services published | `LlmRouter` (one per process; consumed by min-agent via `hub.service::<LlmRouter>()`) |
+| owns | the model name — `MIN_MODEL` resolved against the endpoint's default; the router reports it, so consumers never name a model of their own |
 | deps | `min-core`, `ureq`, `serde_json`, `ring` + `base64` (Google service-account JWTs; already in the tree via rustls) — the largest crate, absorbing all wire-format ugliness |
 
 ## Configuration (environment)

@@ -46,6 +46,7 @@ the only line of work that leaves the plugin (via the service).
 | tools offered | none |
 | services published | none |
 | services consumed | `min_core::llm::LlmRouter` — a core-owned type, so no plugin import |
+| model | asked of the router, which asks the provider — the provider owns the name |
 | deps | `min-core`, `serde_json` |
 
 ## State
@@ -159,6 +160,9 @@ tool-call loop ends the turn with an `Error` instead of hanging forever.
 - `a_round_reports_its_token_usage` and `a_round_without_usage_reports_empty_usage`:
   the provider's own report reaches the bus, normalized — and an endpoint that
   reports nothing yields an empty usage, never a zero-cost one.
+- `the_reported_model_is_the_one_the_provider_will_use`: the model on the
+  `Usage` event is the provider's, not a name the agent made up — the session
+  log records the model that was really requested.
 
 ## See also
 

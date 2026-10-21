@@ -131,6 +131,10 @@ impl ChatProvider for Llm {
         true
     }
 
+    fn model(&self) -> &str {
+        &self.model
+    }
+
     fn complete(
         &self,
         _model: &str,

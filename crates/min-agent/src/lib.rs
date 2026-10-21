@@ -16,7 +16,6 @@ use std::time::Instant;
 const MAX_ROUNDS: usize = 1000;
 
 pub struct AgentPlugin {
-    active_model: String,
     messages: Vec<Value>,
     system: String,
     /// Extra prompt sections handed over via `SystemPromptSection` events
@@ -29,7 +28,6 @@ pub struct AgentPlugin {
 impl AgentPlugin {
     pub fn new() -> Self {
         AgentPlugin {
-            active_model: std::env::var("MIN_MODEL").unwrap_or_else(|_| "claude-3-5-sonnet-20241022".into()),
             messages: Vec::new(),
             system: String::new(),
             sections: Vec::new(),
@@ -95,6 +93,10 @@ impl AgentPlugin {
                 });
                 return;
             };
+            // The provider owns the model: it resolved MIN_MODEL against
+            // the endpoint's default. Ask it, rather than naming a model
+            // here that may never be requested.
+            let model = router.model().unwrap_or_default();
             let tools: Vec<Value> = hub
                 .tools()
                 .specs()
@@ -107,7 +109,7 @@ impl AgentPlugin {
                 .collect();
             hub.emit(events::LlmStart {
                 round,
-                model: self.active_model.clone(),
+                model: model.clone(),
                 messages: self.messages.len(),
                 tools: tools.len(),
             });
@@ -127,7 +129,7 @@ impl AgentPlugin {
             let tools_json = serde_json::to_string(&tools).unwrap_or_default();
 
             let message_str = match router.complete(
-                &self.active_model,
+                &model,
                 &system,
                 &messages_json,
                 &tools_json,
@@ -151,7 +153,7 @@ impl AgentPlugin {
             // do not report usage yield an empty (not zero-cost) record.
             hub.emit(events::Usage {
                 usage: usage_of(&message),
-                model: self.active_model.clone(),
+                model: model.clone(),
                 round,
             });
             self.push_message(
@@ -390,6 +392,9 @@ mod tests {
         fn can_handle(&self, _model: &str) -> bool {
             true
         }
+        fn model(&self) -> &str {
+            "test-model"
+        }
         fn complete(
             &self,
             _model: &str,
@@ -453,6 +458,32 @@ mod tests {
         assert_eq!(seen[0].usage.cache_read_tokens, 30);
         assert_eq!(seen[0].usage.prompt_tokens(), 150);
         assert_eq!(seen[0].round, 1);
+    }
+
+    /// The model the session log records must be the model that was
+    /// actually requested. The provider owns the model name — it resolves
+    /// MIN_MODEL against the endpoint's default — so the agent asks the
+    /// router rather than naming a model of its own.
+    #[test]
+    fn the_reported_model_is_the_one_the_provider_will_use() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let hub = Hub::new(vec![Box::new(UsageRecorder(seen.clone()))]);
+        let router = min_core::llm::LlmRouter::default();
+        router.register(Box::new(FakeProvider {
+            message: "hello".into(),
+            usage: json!({}),
+        }));
+        hub.set_service(router);
+
+        let mut agent = AgentPlugin::new();
+        agent.handle(&hub, &events::UserInput { text: "hi".into() });
+
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].model, "test-model",
+            "the recorded model is the provider's, not one the agent made up"
+        );
     }
 
     /// A provider that reports nothing must produce an empty usage event,

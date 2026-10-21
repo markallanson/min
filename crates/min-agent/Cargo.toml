@@ -8,5 +8,3 @@ description = "min plugin: the agent loop — drives the LLM and dispatches tool
 min-core = { path = "../min-core" }
 serde_json = "1"
 
-[lints]
-workspace = true
