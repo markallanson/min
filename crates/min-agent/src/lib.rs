@@ -141,7 +141,14 @@ impl AgentPlugin {
             ) {
                 Ok(m) => m,
                 Err(e) => {
-                    hub.emit(events::Error { text: e });
+                    // A cancelled turn is the user's own doing, not a
+                    // failure — say so with the event every plugin
+                    // already handles, instead of a red error.
+                    if min_core::is_cancelled() {
+                        hub.emit(events::TurnCancelled {});
+                    } else {
+                        hub.emit(events::Error { text: e });
+                    }
                     return;
                 }
             };
@@ -192,6 +199,17 @@ impl AgentPlugin {
         let out = hub.tools().run(&name, &input);
         let secs = t0.elapsed().as_secs_f64();
         let ok = out.is_ok();
+        if !ok && min_core::is_cancelled() {
+            // The tool was killed because the user cancelled the turn.
+            // The turn ends here; there is no result to feed back.
+            hub.emit(events::TurnCancelled {});
+            return json!({
+                "type": "tool_result",
+                "tool_use_id": id,
+                "content": "cancelled",
+                "is_error": true,
+            });
+        }
         let payload = out.unwrap_or_else(|e| format!("error: {e}"));
         let note: String = payload
             .lines()
@@ -410,6 +428,76 @@ mod tests {
             })
             .to_string())
         }
+    }
+
+    /// A provider that fails the way a cancelled one does.
+    struct CancelledProvider;
+
+    impl min_core::llm::ChatProvider for CancelledProvider {
+        fn can_handle(&self, _model: &str) -> bool {
+            true
+        }
+        fn model(&self) -> &str {
+            "test-model"
+        }
+        fn complete(
+            &self,
+            _model: &str,
+            _system: &str,
+            _messages_json: &str,
+            _tools_json: &str,
+            _callbacks: min_core::llm::Callbacks<'_>,
+        ) -> Result<String, String> {
+            // What min-llm returns when the user hits ctrl-c.
+            Err("cancelled".into())
+        }
+    }
+
+    /// Records which of the turn-ending events the agent emitted.
+    struct OutcomeRecorder {
+        cancelled: Rc<RefCell<bool>>,
+        error: Rc<RefCell<bool>>,
+    }
+
+    impl Plugin for OutcomeRecorder {
+        fn name(&self) -> &'static str {
+            "outcome-rec"
+        }
+        fn handle(&mut self, _hub: &Hub, event: &dyn Any) {
+            if event.downcast_ref::<events::TurnCancelled>().is_some() {
+                *self.cancelled.borrow_mut() = true;
+            } else if let Some(e) = event.downcast_ref::<events::Error>() {
+                *self.error.borrow_mut() = true;
+                assert_ne!(e.text, "cancelled", "a cancelled turn is not an error");
+            }
+        }
+    }
+
+    /// A cancelled turn must be reported as a cancellation, not as an
+    /// error: the repl shows it plainly, and herdr treats min as idle
+    /// rather than blocked.
+    #[test]
+    fn a_cancelled_turn_emits_turn_cancelled_not_an_error() {
+        let cancelled = Rc::new(RefCell::new(false));
+        let error = Rc::new(RefCell::new(false));
+        let hub = Hub::new(vec![Box::new(OutcomeRecorder {
+            cancelled: cancelled.clone(),
+            error: error.clone(),
+        })]);
+        let router = min_core::llm::LlmRouter::default();
+        router.register(Box::new(CancelledProvider));
+        hub.set_service(router);
+
+        // The user hit ctrl-c: the flag is set for the whole process.
+        min_core::cancel();
+
+        let mut agent = AgentPlugin::new();
+        agent.handle(&hub, &events::UserInput { text: "hi".into() });
+
+        min_core::reset_cancel();
+
+        assert!(*cancelled.borrow(), "the turn was reported as cancelled");
+        assert!(!*error.borrow(), "a cancelled turn is not an error");
     }
 
     /// A plugin that records the usage events the agent emits.

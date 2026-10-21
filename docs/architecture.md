@@ -169,7 +169,7 @@ The catalogue — pure data, no behaviour:
 | `ResetConversation` | repl → everyone | (none) — context re-reads AGENTS.md, session re-rolls the id on it |
 | `ClearPromptSections` | context → agent | (none) — agent drops its collected sections |
 | `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
-| `TurnCancelled` | *(no emitter yet)* | (none) — declared and handled by the repl, herdr, session and subagents, but no plugin emits it yet |
+| `TurnCancelled` | agent → everyone | (none) — the user cancelled the turn (Ctrl-C) mid-request or mid-tool |
 | `Usage` | agent → everyone | `usage`, `model`, `round` — the normalized token usage of one LLM request |
 | `Quit` | repl → everyone | (none) — repl calls `hub.quit()` on it |
 

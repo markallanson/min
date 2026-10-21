@@ -231,6 +231,8 @@ impl Plugin for HerdrPlugin {
         } else if event.downcast_ref::<events::MessageEnd>().is_some()
             || event.downcast_ref::<events::TurnCancelled>().is_some()
         {
+            // A cancelled turn is idle, not blocked: the user stopped it
+            // on purpose, and nothing is waiting on min.
             self.report("idle");
         } else if event.downcast_ref::<events::Error>().is_some() {
             self.report("blocked");

@@ -58,7 +58,7 @@ fn handle(…) {
 | `LlmStart` | draw transient `  ⠋ thinking…` on the current line and reset the accumulated thinking preview (tty only) |
 | `Thinking` | append `text` to the thinking buffer and advance the transient spinner (`  ⠙ thinking…`, `  ⠙ thinking: <first 50 chars>…` when reasoning text is available, or `  ⠙ calling <tool>…` while tool-call JSON streams) |
 | `AssistantDelta` | clear any transient spinner (`\r\x1b[K`), then write the chunk verbatim (streaming output) |
-| `TurnCancelled` | clear any transient spinner; newline if not at line start |
+| `TurnCancelled` | clear any transient spinner; newline if not at line start; print `cancelled` |
 | `MessageEnd` | clear any transient spinner; newline if the stream didn't end at one |
 | `ToolStart` | `  ▸ <name> <dim brief>` |
 | `ToolEnd` | `  ✓ <secs>` on success; `  ✗ <secs> <note>` plus dimmed `preview` lines on failure |

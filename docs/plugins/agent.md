@@ -81,6 +81,7 @@ the only line of work that leaves the plugin (via the service).
 | `Thinking` | every non-text stream chunk from `on_thinking` — `text` (reasoning tokens) and `tool` (name of the tool call being streamed) |
 | `AssistantDelta` | every streamed text chunk, forwarded from the LLM's `on_delta` callback |
 | `MessageEnd` | after each complete assistant message |
+| `TurnCancelled` | when the user cancels the turn (Ctrl-C) — the request or tool was killed, so there is no result to feed back |
 | `ToolStart` | before each tool runs — `name` + a one-line `brief` (`command`'s first line or `path`, capped at 80 chars) |
 | `ToolEnd` | after each tool — `ok`, `secs`, `note` (first non-blank line, 100 chars), `preview` (first 5 non-blank lines, 120 cols each, UTF-8-safe) |
 | `Info` | retry/status chatter forwarded from the LLM's `on_status` |
@@ -163,6 +164,9 @@ tool-call loop ends the turn with an `Error` instead of hanging forever.
 - `the_reported_model_is_the_one_the_provider_will_use`: the model on the
   `Usage` event is the provider's, not a name the agent made up — the session
   log records the model that was really requested.
+- `a_cancelled_turn_emits_turn_cancelled_not_an_error`: a cancelled turn is
+  reported as a cancellation, not a failure — the repl says so plainly and
+  herdr treats min as idle rather than blocked.
 
 ## See also
 
