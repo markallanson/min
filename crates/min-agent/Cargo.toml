@@ -6,5 +6,4 @@ description = "min plugin: the agent loop — drives the LLM and dispatches tool
 
 [dependencies]
 min-core = { path = "../min-core" }
-min-llm = { path = "../min-llm" }
 serde_json = "1"
