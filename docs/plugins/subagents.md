@@ -142,8 +142,8 @@ child an event; the child quits because its stdin hits EOF after the one
 instruction line (the repl's non-tty path). Three things can kill a job
 earlier, and all three use the same primitive — kill the child's whole
 process group (it leads its own group, so orphaned grandchildren holding
-the output pipes die too), then reap, join the drains, and record the
-partial output:
+the output pipes die too), then reap, join the drains, and return the
+partial output as the tool's error:
 
 1. the job's own deadline, in `collect` or the one-call wait;
 2. `any`-mode cancellation, once a sibling has won;

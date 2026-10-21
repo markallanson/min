@@ -134,7 +134,10 @@ struct Job {
     child: Child,
     timeout: u64,
     deadline: Instant,
-    output: RefCell<Option<Result<String, String>>>,
+    /// Set once the job has been killed (deadline, cancellation, or the
+    /// plugin's shutdown sweep), so a second look at a live job can tell
+    /// that it was stopped rather than finished.
+    killed: Cell<bool>,
     t_out: Option<JoinHandle<String>>,
     t_err: Option<JoinHandle<String>>,
 }
@@ -142,15 +145,14 @@ struct Job {
 impl Job {
     /// Kill the whole process group, then reap + join + format via
     /// [`finish`]. Used on the deadline (via [`wait_job`]) and by the
-    /// plugin's `Quit` sweep. The reply — always an `Err`, a killed
-    /// subagent did not finish its job — is recorded in `output` so a
-    /// second reader of this job sees the same answer.
+    /// plugin's `Quit` sweep. The reply is always an `Err`: a killed
+    /// subagent did not finish its job.
     fn kill(&mut self, why: &str) -> Result<String, String> {
+        self.killed.set(true);
         kill_group(&mut self.child);
         let reply = match finish(self) {
             Ok(s) | Err(s) => format!("{why}\n{s}"),
         };
-        *self.output.borrow_mut() = Some(Err(reply.clone()));
         Err(reply)
     }
 }
@@ -227,7 +229,7 @@ fn spawn_job(
         child,
         timeout,
         deadline: Instant::now() + Duration::from_secs(timeout),
-        output: RefCell::new(None),
+        killed: Cell::new(false),
         t_out: Some(t_out),
         t_err: Some(t_err),
     })
@@ -274,7 +276,7 @@ fn finish(job: &mut Job) -> Result<String, String> {
 /// Wait until the job exits or its deadline passes; past the deadline,
 /// kill the whole process group — an orphaned grandchild holding the
 /// output pipes would otherwise keep the drains (and min) blocked long
-/// past it. Records the formatted result in `job.output`.
+/// past it.
 fn wait_job(job: &mut Job) -> Result<String, String> {
     loop {
         if min_core::is_cancelled() {
@@ -282,9 +284,7 @@ fn wait_job(job: &mut Job) -> Result<String, String> {
         }
         match job.child.try_wait() {
             Ok(Some(_)) => {
-                let r = finish(job);
-                *job.output.borrow_mut() = Some(r.clone());
-                return r;
+                return finish(job);
             }
             Ok(None) if Instant::now() >= job.deadline => {
                 return job.kill(&format!(
@@ -482,7 +482,6 @@ impl Tool for CollectTool {
                     if waiting[i].1.child.try_wait().is_ok_and(|s| s.is_some()) {
                         let (handle, mut job) = waiting.swap_remove(i);
                         let output = finish(&mut job);
-                        *job.output.borrow_mut() = Some(output.clone());
                         if output.is_ok() {
                             winner = Some(handle.clone());
                         }
@@ -860,7 +859,10 @@ mod tests {
 
         // The sweep runs on Quit — through the real handle, like the core.
         plugin.handle(&hub, &events::Quit {});
-        assert!(jobs.borrow().get("1").unwrap().output.borrow().is_some());
+        assert!(
+            jobs.borrow().get("1").unwrap().killed.get(),
+            "the sweep killed the job"
+        );
 
         // The child is gone: reap without blocking long.
         let mut table = jobs.borrow_mut();
@@ -913,7 +915,10 @@ mod tests {
         assert!(reply.starts_with("handle: 1"), "{reply}");
 
         plugin.handle(&hub, &events::TurnCancelled {});
-        assert!(jobs.borrow().get("1").unwrap().output.borrow().is_some());
+        assert!(
+            jobs.borrow().get("1").unwrap().killed.get(),
+            "the sweep killed the job"
+        );
 
         let mut table = jobs.borrow_mut();
         let mut job = table.remove("1").unwrap();
