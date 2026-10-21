@@ -122,6 +122,10 @@ an agent's system prompt and history without reporting it.
 | `Info` | missing-key warning at `start`; the greeting; retry progress from `complete`'s `on_status` |
 | `Error` | never from `start`; `complete` returns failures to the caller (min-agent turns them into `Error`s) |
 
+The plugin emits no usage events of its own — it *reports* usage by
+including it in the normalized response, and min-agent puts it on the bus
+as `events::Usage`. See [min-usage](usage.md) for the whole chain.
+
 ## The `complete` pipeline
 
 ```
@@ -149,6 +153,36 @@ Key rules:
 - History is Anthropic-style internally; `to_openai_messages` converts
   assistant `tool_use` blocks to `tool_calls` and user `tool_result` blocks
   to `role:"tool"` messages on the way out.
+
+## Token usage
+
+The provider's own token count is parsed per dialect and normalized into
+`min_core::usage::TokenUsage`, then included in the response:
+
+```json
+{ "stop_reason": "end_turn",
+  "content": [ … ],
+  "usage": { "input_tokens": 4242, "output_tokens": 17,
+             "cache_read_tokens": 0, "cache_write_tokens": 0 } }
+```
+
+Where each dialect puts it, and the two things that have to be right:
+
+| dialect | where | note |
+|---|---|---|
+| Anthropic | `message_start.message.usage` (prompt) + `message_delta.usage` (generated) | cache tokens are counted *apart* from the prompt tokens |
+| OpenAI family | a trailing chunk with `"choices": []` | only sent because the body sets `stream_options.include_usage` |
+| Ollama | the final NDJSON line | `prompt_eval_count` / `eval_count` |
+
+- **The usage chunk must be read before the choices.** The trailing chunk
+  carries no choices at all, so a parser that looks for `choices[0]` first
+  drops the count on the floor.
+- **The stream must not stop at the finish reason.** The usage chunk
+  arrives *after* the one carrying `finish_reason`, so an OpenAI-family
+  stream is read to its end (`[DONE]`) rather than cut short there.
+
+Endpoints that report no usage (Vertex may not) yield an *empty* usage,
+never a zero-cost one — see [min-usage](usage.md).
 
 ## Failure classification and retries
 
@@ -222,9 +256,15 @@ attempt 1 → 429 code 1113 → is_plan_mismatch ✓
   unsupported types rejected.
 - `cancel_reader_aborts_on_cancellation_or_interrupted` and `complete_aborts_immediately_if_cancelled`:
   in-flight reads and completions abort immediately when `is_cancelled()` is set.
+- Token usage: each dialect's count is parsed and normalized; the OpenAI
+  usage chunk is read even though it carries no choices; the OpenAI body
+  asks for usage (`stream_options.include_usage`); the stream is read past
+  the finish reason. `usage_survives_a_real_stream` proves it over a real
+  socket, and fails if either early exit is put back.
 
 ## See also
 
 [min-agent](agent.md) (the only consumer of the `Llm` service — the one
-documented import exception) · [README](../../README.md) (429 field guide) ·
+documented import exception) · [min-usage](usage.md) (where the token
+counts go) · [README](../../README.md) (429 field guide) ·
 [plugins.md](../plugins.md)

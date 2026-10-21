@@ -144,6 +144,14 @@ impl AgentPlugin {
             
             let message: Value = serde_json::from_str(&message_str).unwrap_or_else(|_| json!({}));
             hub.emit(events::MessageEnd {});
+            // Token accounting for the round that just finished. The
+            // provider's own report, normalized by min-llm; endpoints that
+            // do not report usage yield an empty (not zero-cost) record.
+            hub.emit(events::Usage {
+                usage: usage_of(&message),
+                model: self.active_model.clone(),
+                round,
+            });
             self.push_message(
                 hub,
                 json!({"role": "assistant", "content": message["content"].clone()}),
@@ -195,6 +203,20 @@ impl AgentPlugin {
             "content": payload,
             "is_error": !ok,
         })
+    }
+}
+
+/// The token usage a normalized LLM response carried, if any.
+fn usage_of(message: &Value) -> min_core::usage::TokenUsage {
+    let u = &message["usage"];
+    if u.is_null() {
+        return min_core::usage::TokenUsage::default();
+    }
+    min_core::usage::TokenUsage {
+        input_tokens: u["input_tokens"].as_u64().unwrap_or(0),
+        output_tokens: u["output_tokens"].as_u64().unwrap_or(0),
+        cache_read_tokens: u["cache_read_tokens"].as_u64().unwrap_or(0),
+        cache_write_tokens: u["cache_write_tokens"].as_u64().unwrap_or(0),
     }
 }
 
@@ -282,6 +304,8 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use min_core::Hub;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     #[test]
     fn preview_takes_first_five_nonblank_lines() {
@@ -353,11 +377,107 @@ mod tests {
         )]);
     }
 
+    /// A fake provider that answers with a fixed message and a fixed
+    /// usage report — the end-to-end path from the wire to the bus.
+    struct FakeProvider {
+        message: String,
+        usage: Value,
+    }
+
+    impl min_core::llm::ChatProvider for FakeProvider {
+        fn can_handle(&self, _model: &str) -> bool {
+            true
+        }
+        fn complete(
+            &self,
+            _model: &str,
+            _system: &str,
+            _messages_json: &str,
+            _tools_json: &str,
+            _on_delta: &mut dyn FnMut(&str),
+            _on_thinking: &mut dyn FnMut(&str, &str),
+            _on_status: &mut dyn FnMut(&str),
+        ) -> Result<String, String> {
+            Ok(json!({
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": self.message}],
+                "usage": self.usage,
+            })
+            .to_string())
+        }
+    }
+
+    /// A plugin that records the usage events the agent emits.
+    struct UsageRecorder(Rc<RefCell<Vec<events::Usage>>>);
+
+    impl Plugin for UsageRecorder {
+        fn name(&self) -> &'static str {
+            "usage-rec"
+        }
+        fn handle(&mut self, _hub: &Hub, event: &dyn Any) {
+            if let Some(e) = event.downcast_ref::<events::Usage>() {
+                self.0.borrow_mut().push(events::Usage {
+                    usage: e.usage,
+                    model: e.model.clone(),
+                    round: e.round,
+                });
+            }
+        }
+    }
+
+    /// The whole path: the agent calls the LLM, the provider's usage
+    /// report comes back, and the agent puts it on the bus.
+    #[test]
+    fn a_round_reports_its_token_usage() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let hub = Hub::new(vec![Box::new(UsageRecorder(seen.clone()))]);
+        let router = min_core::llm::LlmRouter::default();
+        router.register(Box::new(FakeProvider {
+            message: "hello".into(),
+            usage: json!({
+                "input_tokens": 120,
+                "output_tokens": 8,
+                "cache_read_tokens": 30,
+                "cache_write_tokens": 0,
+            }),
+        }));
+        hub.set_service(router);
+
+        let mut agent = AgentPlugin::new();
+        agent.handle(&hub, &events::UserInput { text: "hi".into() });
+
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 1, "one round, one usage event");
+        assert_eq!(seen[0].usage.input_tokens, 120);
+        assert_eq!(seen[0].usage.output_tokens, 8);
+        assert_eq!(seen[0].usage.cache_read_tokens, 30);
+        assert_eq!(seen[0].usage.prompt_tokens(), 150);
+        assert_eq!(seen[0].round, 1);
+    }
+
+    /// A provider that reports nothing must produce an empty usage event,
+    /// not a zero-cost one.
+    #[test]
+    fn a_round_without_usage_reports_empty_usage() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let hub = Hub::new(vec![Box::new(UsageRecorder(seen.clone()))]);
+        let router = min_core::llm::LlmRouter::default();
+        router.register(Box::new(FakeProvider {
+            message: "hello".into(),
+            usage: json!({}),
+        }));
+        hub.set_service(router);
+
+        let mut agent = AgentPlugin::new();
+        agent.handle(&hub, &events::UserInput { text: "hi".into() });
+
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].usage.is_empty());
+    }
+
     #[test]
     fn push_message_emits_conversation_message_and_replay_restores_messages() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
         struct MsgRecorder(Rc<RefCell<Vec<String>>>);
         impl Plugin for MsgRecorder {
             fn name(&self) -> &'static str {

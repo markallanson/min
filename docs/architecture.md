@@ -33,6 +33,7 @@ plugin — the hooks, the three shapes, a complete worked example — see
     │   min-tools-shell   bash with timeout + output capture
     │   min-tools-clock   current UTC time
     │   min-subagents     subagent tools: fork `min --parent-session <id>`
+    │   min-usage         token accounting: the session's ledger (a service)
     │   min-context       ~/.config/min/AGENTS.md + project files → system prompt
     │   min-agent         the agent loop: LLM ↔ tools until done
     ▼
@@ -168,6 +169,7 @@ The catalogue — pure data, no behaviour:
 | `ClearPromptSections` | context → agent | (none) — agent drops its collected sections |
 | `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
 | `TurnCancelled` | agent → everyone | (none) — in-flight turn was cancelled by user (Ctrl-C) |
+| `Usage` | agent → everyone | `usage`, `model`, `round` — the normalized token usage of one LLM request |
 | `Quit` | repl → everyone | (none) — repl calls `hub.quit()` on it |
 
 ### Semantics
@@ -212,6 +214,14 @@ storage and lookup only — behaviour belongs entirely to the plugins.
   a tool error for the model.
 
 Usage examples for both are in [plugins.md](plugins.md).
+
+A service's *type* must be nameable by its consumers, so the type
+sometimes lives in the core even though the behaviour does not:
+`min-core/src/llm.rs` holds `ChatProvider` and `LlmRouter` (min-llm
+supplies the implementations), and `min-core/src/usage.rs` holds
+`TokenUsage` and `UsageLedger` (the accounting plugin owns the ledger; the
+core owns the shape). The core holds no logic either way — a `TokenUsage`
+is data, and a `UsageLedger` is a counter.
 
 ---
 
@@ -300,7 +310,8 @@ Every plugin has its own architecture document in [docs/plugins/](plugins/) —
 required, one per crate, per [plugins.md](plugins.md#plugin-documentation-required):
 
 ```
-crates/min-core          the loop: Plugin, Hub, events, Tool, ToolRegistry
+crates/min-core          the loop: Plugin, Hub, events, Tool, ToolRegistry,
+                         and the token-accounting vocabulary (TokenUsage, UsageLedger)
 crates/min-repl          terminal UI (raw mode, ANSI, input history)      → plugins/repl.md
 crates/min-llm           Anthropic Messages + OpenAI chat clients (streaming) → plugins/llm.md
 crates/min-agent         conversation state + tool loop + system prompt       → plugins/agent.md
@@ -317,6 +328,9 @@ crates/min-subagents     the `subagent` family: forks `min --parent-session <id>
                          batches in wall-clock parallel (separate processes —
                          the core stays single-threaded)
                                                                              → plugins/subagents.md
+crates/min-usage         token accounting: records each request's normalized
+                         usage into a ledger, published as a service; `/usage`
+                         prints it                                            → plugins/usage.md
 crates/min-herdr         reports idle/working/blocked to Herdr via its CLI, tagged with
                          min's session id (active only when HERDR_ENV=1; releases on Quit)
                                                                              → plugins/herdr.md

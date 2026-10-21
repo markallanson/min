@@ -76,6 +76,7 @@ the only line of work that leaves the plugin (via the service).
 |---|---|
 | `ConversationMessage` | whenever a message (`user`, `assistant`, or `tool_result`) is pushed to `messages` |
 | `LlmStart` | before each `llm.complete` call — `round` (1-based), `model`, `messages` count, `tools` count |
+| `Usage` | after each round — the normalized token usage the provider reported (`usage`, `model`, `round`); empty when the endpoint reports none |
 | `Thinking` | every non-text stream chunk from `on_thinking` — `text` (reasoning tokens) and `tool` (name of the tool call being streamed) |
 | `AssistantDelta` | every streamed text chunk, forwarded from the LLM's `on_delta` callback |
 | `MessageEnd` | after each complete assistant message |
@@ -161,6 +162,7 @@ tool-call loop ends the turn with an `Error` instead of hanging forever.
 ## See also
 
 [min-llm](llm.md) (the service consumed) ·
+[min-usage](usage.md) (where the per-round token counts go) ·
 [min-tools-*](tools-fs.md) (what `tools().run()` dispatches to) ·
 [min-context](context.md) (where sections come from) ·
 [plugins.md](../plugins.md)

@@ -236,6 +236,7 @@ dependencies = [
  "min-tools-clock",
  "min-tools-fs",
  "min-tools-shell",
+ "min-usage",
 ]
 
 [[package]]
@@ -325,6 +326,13 @@ dependencies = [
  "libc",
  "min-core",
  "serde_json",
+]
+
+[[package]]
+name = "min-usage"
+version = "0.1.0"
+dependencies = [
+ "min-core",
 ]
 
 [[package]]

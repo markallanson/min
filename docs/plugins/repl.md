@@ -28,6 +28,7 @@ read as-is, so min can be scripted: `echo 'hello' | min`.
         │     │  a full line arrives                                           │
         │     ▼                                                                │
         │  ┌─ /help  → print help (no event)                                   │
+        │  ├─ /usage → print the token ledger (no event)                      │
         │  ├─ /clear → return ResetConversation {} ───────────────▶ the bus    │
         │  ├─ /quit  → return Quit {} ───────────────────────────▶ the bus    │
         │  ├─ /other → "unknown command" (no event)                          │
@@ -74,6 +75,22 @@ fn handle(…) {
 | `UserInput` | a non-command line was submitted (also swaps in the SIGINT-cancel handler for the turn's duration) |
 | `ResetConversation` | `/clear` |
 | `Quit` | `/quit`, ctrl-d at an empty prompt, or EOF/SIGINT while blocked on stdin |
+
+## `/usage`
+
+`/usage` prints the session's token ledger, read from the
+`UsageLedger` service (published by [min-usage](usage.md)):
+
+```
+❯ /usage
+  usage: 3 request(s) · in 48,213 · out 6,401 · cache read 40,000 · total 54,614 · context now 12,413
+```
+
+It is a *reader*, not a counter: the repl keeps no tally of its own, so
+the numbers it shows are the same ones every other plugin sees. When
+there is nothing to show, it says so in words rather than printing
+zeros — "the usage plugin is not loaded", "no requests yet", or "this
+endpoint does not report token usage".
 
 ## Line editing
 
@@ -135,5 +152,6 @@ the next command.
 ## See also
 
 [min-core](../architecture.md) (the loop this plugin feeds) ·
+[min-usage](usage.md) (the ledger `/usage` prints) ·
 [min-herdr](herdr.md) and [min-session](session.md) (what `Quit` lets them
 do) · [plugins.md](../plugins.md)

@@ -98,7 +98,9 @@ fn main() {
     // `wait` — where it announces the session, once everything has started —
     // is reached before the repl blocks on stdin; the repl next, so the
     // terminal is set up before anything wants to print; the agent last, so
-    // every tool is registered before the first turn runs.
+    // every tool is registered before the first turn runs. The usage plugin
+    // is a pure listener — it records the agent's `Usage` events and
+    // publishes the ledger — so its position does not matter.
     let plugins: Vec<Box<dyn Plugin>> = vec![
         Box::new(min_session::SessionPlugin::with_mode(mode)), // session id, JSONL store, resume
         Box::new(min_herdr::HerdrPlugin::new()), // herdr state reporter (no-op outside herdr)
@@ -113,6 +115,7 @@ fn main() {
         Box::new(min_tools_shell::ShellPlugin),  // bash
         Box::new(min_tools_clock::ClockPlugin),  // current UTC time
         Box::new(min_subagents::SubagentsPlugin::new()), // the subagent tool: forks min
+        Box::new(min_usage::UsagePlugin::new()),     // token accounting ledger
         Box::new(min_context::ContextPlugin),    // AGENTS.md → system prompt
         Box::new(min_agent::AgentPlugin::new()), // the agent loop
     ];

@@ -56,6 +56,7 @@ the tests pin.
 | shell | [tools-shell.md](plugins/tools-shell.md) | capability | `bash` with timeout, deadlock-free capture, output truncation |
 | clock | [tools-clock.md](plugins/tools-clock.md) | capability | current UTC time — the worked example, made real |
 | subagents | [subagents.md](plugins/subagents.md) | capability + listener | `subagent` (one call, blocks) / `subagent_spawn` + `subagent_collect` (start many, join in parallel) — one `min` process per instruction, parented on this session |
+| usage | [usage.md](plugins/usage.md) | listener | token accounting: records each request's normalized usage into a ledger and publishes it as a service; `/usage` prints it |
 | context | [context.md](plugins/context.md) | source + listener | `~/.config/min/AGENTS.md` + project files → system-prompt sections |
 | agent | [agent.md](plugins/agent.md) | listener/worker | the agent loop: LLM ↔ tools until done |
 
@@ -70,7 +71,7 @@ Every plugin crate ships with `docs/plugins/<name>.md` — the file that
 explains how it works to the next person (or the next instance of min)
 without making them read the crate. A new plugin is not done until the doc
 exists; a changed plugin's doc is changed in the same commit. No new page
-styles: the ten existing docs are the canon — copy the structure.
+styles: the existing docs are the canon — copy the structure.
 
 Required contents, in order (skip a section only when genuinely empty —
 say so in one line rather than dropping the heading):
@@ -193,6 +194,7 @@ plugins never import each other:
 | `ClearPromptSections` | context → agent | (none) — agent drops its collected system-prompt sections |
 | `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
 | `TurnCancelled` | agent → everyone | (none) — in-flight turn was cancelled by user (Ctrl-C) |
+| `Usage` | agent → everyone | `usage`, `model`, `round` — the normalized token usage of one LLM request |
 | `Quit` | repl → everyone | (none) — the repl calls `hub.quit()` on it |
 
 Delivery rules in one breath: `hub.emit(e)` is immediate, synchronous and

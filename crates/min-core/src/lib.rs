@@ -37,6 +37,7 @@ use std::collections::HashMap;
 
 pub mod events;
 pub mod tool;
+pub mod usage;
 
 pub use tool::{Tool, ToolRegistry};
 

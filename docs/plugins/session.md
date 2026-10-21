@@ -63,6 +63,7 @@ discriminator:
 | `ConversationMessage` | `{"type":"message","role":"user"\|"assistant","content":...}` |
 | `ToolStart` | `{"type":"tool","name":"<name>","brief":"<brief>"}` |
 | `ToolEnd` | `{"type":"tool_end","ok":<bool>,"secs":<f64>,"note":"<note>"}` |
+| `Usage` | `{"type":"usage","round":<n>,"model":"<model>","input_tokens":<n>,"output_tokens":<n>,"cache_read_tokens":<n>,"cache_write_tokens":<n>}` |
 | `Info` | `{"type":"info","text":"<text>"}` |
 | `Error` | `{"type":"error","text":"<text>"}` |
 | `SessionEnd` | `{"type":"session_end","ts":<secs>}` |
@@ -108,6 +109,7 @@ discriminator:
 | `SystemPromptSection` | write `{"type":"instructions",...}` (or buffer until `SessionStart` if emitted during `start`) |
 | `ConversationMessage` | write `{"type":"message","role":...,"content":...}` |
 | `ToolStart` / `ToolEnd` | write `{"type":"tool",...}` / `{"type":"tool_end",...}` |
+| `Usage` | write `{"type":"usage","round":...,"model":...,"input_tokens":...,"output_tokens":...,"cache_read_tokens":...,"cache_write_tokens":...}` — one record per LLM request |
 | `Info` / `Error` | write `{"type":"info",...}` / `{"type":"error",...}` |
 | `TurnCancelled` | write `{"type":"info","text":"turn cancelled by user"}` |
 | `SessionEnd` | write `{"type":"session_end",...}` and close file |
@@ -174,6 +176,7 @@ Listing and resuming:
 
 [min-agent](agent.md) (emits `ConversationMessage`, restores `messages` on `ReplayMessage`) ·
 [min-repl](repl.md) (restores history on `ReplayMessage`, prints `ReplayExchange`) ·
+[min-usage](usage.md) (the ledger, and the `usage` records written here) ·
 [min-subagents](subagents.md) (spawns child processes with `--parent-session <id>`) ·
 [min-herdr](herdr.md) (tracks `SessionStart` / `SessionEnd`) ·
 [plugins.md](../plugins.md)

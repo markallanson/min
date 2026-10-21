@@ -133,5 +133,22 @@ pub struct ReplayExchange {
 /// The in-flight turn was cancelled by the user (agent/repl → everyone).
 pub struct TurnCancelled {}
 
+/// Token accounting for one completed LLM request (agent → everyone).
+///
+/// Emitted after every round that produced a usage report. The `usage`
+/// is normalized across endpoints (see [`crate::usage::TokenUsage`]), so a
+/// consumer never has to know which provider answered. Endpoints that do
+/// not report usage still emit the event, with an empty `usage` — the
+/// event says "a request finished", the payload says "here is what it
+/// cost, if the provider told us".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub usage: crate::usage::TokenUsage,
+    /// The model that served the request.
+    pub model: String,
+    /// 1-based round index within the current turn.
+    pub round: usize,
+}
+
 /// Shut down the harness (repl → everyone).
 pub struct Quit {}

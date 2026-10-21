@@ -42,6 +42,7 @@
 //! - `HTTPS_PROXY`        optional outbound proxy
 
 use min_core::{events, Hub, Plugin};
+use min_core::usage::TokenUsage;
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
 use std::io::{BufRead, BufReader, Read};
@@ -328,6 +329,9 @@ impl Llm {
                 }
                 let fns: Vec<Value> = tools.iter().map(to_function).collect();
                 let mut body = json!({"model": self.model, "max_tokens": self.max_tokens, "messages": wire, "stream": true});
+                // The OpenAI family only reports usage when the request asks
+                // for it; the count then arrives in a trailing chunk.
+                body["stream_options"] = json!({"include_usage": true});
                 if !fns.is_empty() {
                     body["tools"] = Value::Array(fns);
                 }
@@ -373,6 +377,13 @@ impl Llm {
             Auth::Key(k) if k.len() > 12 && k.is_ascii() => format!("{}…{}", &k[..6], &k[k.len() - 4..]),
             _ => "redacted".into(),
         }
+    }
+
+    /// Whether this endpoint reports usage in a chunk that arrives after
+    /// the one carrying the finish reason (the OpenAI family does). The
+    /// stream must be read to its end for the count to be seen.
+    fn usage_after_finish(&self) -> bool {
+        matches!(self.api, "openai" | "vertex")
     }
 
     fn try_once(
@@ -438,7 +449,10 @@ impl Llm {
                 "ollama" => parse_ollama_chunk(&v, &mut blocks, on_delta, on_thinking).map_err(Fail::Stream)?,
                 _ => parse_anthropic_chunk(&v, &mut blocks, on_delta, on_thinking).map_err(Fail::Stream)?,
             }
-            if blocks.done {
+            // The OpenAI family reports usage in a trailing chunk that
+            // arrives *after* the one carrying `finish_reason`, so the
+            // stream must not be cut short there — it ends at `[DONE]`.
+            if blocks.done && !self.usage_after_finish() {
                 break;
             }
         }
@@ -487,6 +501,14 @@ fn parse_anthropic_chunk(
     on_thinking: &mut dyn FnMut(&str, &str),
 ) -> Result<(), String> {
     match v["type"].as_str().unwrap_or_default() {
+        "message_start" => {
+            // Anthropic reports the prompt tokens here, and counts cache
+            // reads and cache writes apart from them.
+            let u = &v["message"]["usage"];
+            b.usage.input_tokens = num(&u["input_tokens"]);
+            b.usage.cache_read_tokens = num(&u["cache_read_input_tokens"]);
+            b.usage.cache_write_tokens = num(&u["cache_creation_input_tokens"]);
+        }
         "content_block_start" => match v["content_block"]["type"].as_str().unwrap_or_default() {
             "text" => b.push_text(),
             "thinking" | "redacted_thinking" => on_thinking("", ""),
@@ -520,6 +542,8 @@ fn parse_anthropic_chunk(
         },
         "message_delta" => {
             b.stop_reason = v["delta"]["stop_reason"].as_str().unwrap_or_default().to_string();
+            // The generated tokens are only known once the message ends.
+            b.usage.output_tokens = num(&v["usage"]["output_tokens"]);
         }
         "message_stop" => b.done = true,
         "error" => {
@@ -538,6 +562,17 @@ fn parse_openai_chunk(
 ) -> Result<(), String> {
     if let Some(err) = v["error"]["message"].as_str() {
         return Err(err.to_string());
+    }
+    // The usage chunk carries `"choices": []` — it must be read before the
+    // choices are looked at, or the count is silently lost.
+    if let Some(u) = v.get("usage") {
+        if !u.is_null() {
+            b.usage.input_tokens = num(&u["prompt_tokens"]);
+            b.usage.output_tokens = num(&u["completion_tokens"]);
+            // OpenAI-style endpoints that support caching report the cached
+            // prompt tokens apart from the prompt total.
+            b.usage.cache_read_tokens = num(&u["prompt_tokens_details"]["cached_tokens"]);
+        }
     }
     let Some(choice) = v["choices"].get(0) else {
         return Ok(());
@@ -635,9 +670,18 @@ fn parse_ollama_chunk(
             _ => "end_turn",
         }
         .into();
+        // The counts only arrive on the final line of the stream.
+        b.usage.input_tokens = num(&v["prompt_eval_count"]);
+        b.usage.output_tokens = num(&v["eval_count"]);
         b.done = true;
     }
     Ok(())
+}
+
+/// A number from a JSON value, as a token count. Anything that is not a
+/// number counts as zero — a missing usage report is not an error.
+fn num(v: &Value) -> u64 {
+    v.as_u64().unwrap_or(0)
 }
 
 /// `MIN_API` selectors: a wire dialect or an alias for a well-known
@@ -799,6 +843,8 @@ struct Blocks {
     tools: Vec<(String, String, String, Value)>, // (id, name, accumulated json, extra_content)
     stop_reason: String,
     done: bool,
+    /// Token accounting for the request, as reported by the endpoint.
+    usage: TokenUsage,
 }
 
 impl Blocks {
@@ -845,7 +891,16 @@ impl Blocks {
             content.push(block);
         }
         let stop = if self.stop_reason.is_empty() { "end_turn" } else { &self.stop_reason };
-        json!({"stop_reason": stop, "content": content})
+        json!({
+            "stop_reason": stop,
+            "content": content,
+            "usage": {
+                "input_tokens": self.usage.input_tokens,
+                "output_tokens": self.usage.output_tokens,
+                "cache_read_tokens": self.usage.cache_read_tokens,
+                "cache_write_tokens": self.usage.cache_write_tokens,
+            },
+        })
     }
 }
 
@@ -1089,9 +1144,156 @@ mod tests {
         assert_eq!(quiet(json!({"error": "model not found"}), &mut b).unwrap_err(), "model not found");
     }
 
+    /// Anthropic reports the prompt tokens in `message_start` and the
+    /// generated ones in `message_delta`; cache tokens are counted apart
+    /// from the prompt tokens.
     #[test]
-    fn vertex_endpoints() {
-        assert_eq!(
+    fn anthropic_usage_is_normalized() {
+        let mut b = Blocks::default();
+        let quiet = |v: Value, b: &mut Blocks| {
+            parse_anthropic_chunk(&v, b, &mut |_| {}, &mut |_, _| {})
+        };
+        quiet(
+            json!({"type": "message_start", "message": {"usage": {
+                "input_tokens": 100,
+                "cache_read_input_tokens": 4000,
+                "cache_creation_input_tokens": 500}}}),
+            &mut b,
+        )
+        .unwrap();
+        quiet(
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                   "usage": {"output_tokens": 42}}),
+            &mut b,
+        )
+        .unwrap();
+
+        let u = &b.finish()["usage"];
+        assert_eq!(u["input_tokens"], 100);
+        assert_eq!(u["output_tokens"], 42);
+        assert_eq!(u["cache_read_tokens"], 4000);
+        assert_eq!(u["cache_write_tokens"], 500);
+        // The prompt as Anthropic saw it: 100 + 4000 + 500.
+        assert_eq!(u["input_tokens"].as_u64().unwrap()
+            + u["cache_read_tokens"].as_u64().unwrap()
+            + u["cache_write_tokens"].as_u64().unwrap(),
+            4600);
+    }
+
+    /// The OpenAI family reports usage in a trailing chunk that carries
+    /// `"choices": []` — it must be read anyway, or the count is lost.
+    #[test]
+    fn openai_usage_chunk_without_choices_is_still_read() {
+        let mut b = Blocks::default();
+        let quiet = |v: Value, b: &mut Blocks| {
+            parse_openai_chunk(&v, b, &mut |_| {}, &mut |_, _| {})
+        };
+        quiet(
+            json!({"choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]}),
+            &mut b,
+        )
+        .unwrap();
+        assert!(b.done, "the finish reason ends the message");
+        // The usage chunk that follows: no choices at all.
+        quiet(
+            json!({"choices": [], "usage": {"prompt_tokens": 321, "completion_tokens": 7,
+                   "prompt_tokens_details": {"cached_tokens": 64}}}),
+            &mut b,
+        )
+        .unwrap();
+
+        let u = &b.finish()["usage"];
+        assert_eq!(u["input_tokens"], 321);
+        assert_eq!(u["output_tokens"], 7);
+        assert_eq!(u["cache_read_tokens"], 64);
+    }
+
+    /// Ollama reports both counts on its final line.
+    #[test]
+    fn ollama_usage_is_normalized() {
+        let mut b = Blocks::default();
+        let quiet = |v: Value, b: &mut Blocks| {
+            parse_ollama_chunk(&v, b, &mut |_| {}, &mut |_, _| {})
+        };
+        quiet(
+            json!({"message": {"content": "ok"}, "done": true, "done_reason": "stop",
+                   "prompt_eval_count": 900, "eval_count": 25}),
+            &mut b,
+        )
+        .unwrap();
+        let u = &b.finish()["usage"];
+        assert_eq!(u["input_tokens"], 900);
+        assert_eq!(u["output_tokens"], 25);
+    }
+
+    /// An endpoint that reports nothing must not read as "zero tokens" —
+    /// the numbers stay absent, which is what `is_empty` is for.
+    #[test]
+    fn missing_usage_is_empty_not_zero_cost() {
+        let mut b = Blocks::default();
+        let quiet = |v: Value, b: &mut Blocks| {
+            parse_openai_chunk(&v, b, &mut |_| {}, &mut |_, _| {})
+        };
+        quiet(
+            json!({"choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]}),
+            &mut b,
+        )
+        .unwrap();
+        let u = b.finish()["usage"].clone();
+        let usage = TokenUsage {
+            input_tokens: u["input_tokens"].as_u64().unwrap(),
+            output_tokens: u["output_tokens"].as_u64().unwrap(),
+            cache_read_tokens: u["cache_read_tokens"].as_u64().unwrap(),
+            cache_write_tokens: u["cache_write_tokens"].as_u64().unwrap(),
+        };
+        assert!(usage.is_empty());
+    }
+
+    /// The OpenAI body must ask for usage — the endpoint only reports it
+    /// when the request says so.
+    #[test]
+    fn openai_body_asks_for_usage() {
+        let llm = Llm {
+            http: ureq::Agent::new(),
+            api: "openai",
+            base: RefCell::new(String::new()),
+            mirror: None,
+            mirrored: Cell::new(false),
+            auth: Auth::Key("k".into()),
+            model: "gpt-4o".into(),
+            max_tokens: 1024,
+            num_ctx: 32768,
+        };
+        let b = llm.build_body("sys", &[], &[]);
+        assert_eq!(b["stream_options"]["include_usage"], json!(true));
+    }
+
+    /// The stream must not be cut short at the finish reason: the OpenAI
+    /// family's usage chunk arrives after it.
+    #[test]
+    fn openai_stream_reads_past_the_finish_reason() {
+        let llm = Llm {
+            http: ureq::Agent::new(),
+            api: "openai",
+            base: RefCell::new(String::new()),
+            mirror: None,
+            mirrored: Cell::new(false),
+            auth: Auth::Key("k".into()),
+            model: "gpt-4o".into(),
+            max_tokens: 1024,
+            num_ctx: 32768,
+        };
+        assert!(llm.usage_after_finish());
+
+        let anthropic = Llm {
+            api: "anthropic",
+            ..llm
+        };
+        assert!(!anthropic.usage_after_finish());
+    }
+
+    #[test]
+    fn vertex_endpoints() {        assert_eq!(
             vertex_base("p1", "global"),
             "https://aiplatform.googleapis.com/v1/projects/p1/locations/global/endpoints/openapi"
         );
@@ -1240,6 +1442,84 @@ mod tests {
         assert!(reader.read(&mut buf).is_err());
         assert_eq!(reader.read(&mut buf).unwrap_err().to_string(), "cancelled");
         min_core::reset_cancel();
+    }
+
+    /// The whole path over a real socket: a fake OpenAI endpoint streams
+    /// a finish reason and then a usage chunk, and the client must come
+    /// back with both the text and the count.
+    ///
+    /// The server is a thread in this process, bound to an ephemeral port —
+    /// no external process, no fixed port.
+    #[test]
+    fn usage_survives_a_real_stream() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            // Read the request headers and body (headers end at a blank line).
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    content_length = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0u8; content_length];
+            reader.read_exact(&mut body).unwrap();
+            let body = String::from_utf8_lossy(&body).to_string();
+            let asked = body.contains("\"include_usage\":true");
+
+            let mut out = stream;
+            out.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n").unwrap();
+            // The text, then the finish reason, then the usage chunk.
+            out.write_all(b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n").unwrap();
+            out.write_all(b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n").unwrap();
+            out.write_all(
+                b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1234,\"completion_tokens\":56}}\n\n",
+            )
+            .unwrap();
+            out.write_all(b"data: [DONE]\n\n").unwrap();
+            out.flush().unwrap();
+            asked
+        });
+
+        let llm = Llm {
+            http: ureq::Agent::new(),
+            api: "openai",
+            base: RefCell::new(format!("http://127.0.0.1:{port}/v1")),
+            mirror: None,
+            mirrored: Cell::new(false),
+            auth: Auth::Key("k".into()),
+            model: "gpt-4o".into(),
+            max_tokens: 1024,
+            num_ctx: 32768,
+        };
+        let mut deltas = Vec::new();
+        let res = llm
+            .complete_inner(
+                "sys",
+                &[json!({"role": "user", "content": "hi"})],
+                &[],
+                &mut |d| deltas.push(d.to_string()),
+                &mut |_, _| {},
+                &mut |_| {},
+            )
+            .expect("the request succeeded");
+
+        assert!(server.join().unwrap(), "the request asked for usage");
+        assert_eq!(deltas, vec!["hi".to_string()]);
+        assert_eq!(res["content"][0]["text"], "hi");
+        // The usage chunk arrived *after* the finish reason and was still read.
+        assert_eq!(res["usage"]["input_tokens"], 1234);
+        assert_eq!(res["usage"]["output_tokens"], 56);
     }
 
     #[test]

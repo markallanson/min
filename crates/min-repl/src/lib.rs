@@ -71,7 +71,7 @@ impl Plugin for Repl {
         }
     }
 
-    fn wait(&mut self, _hub: &Hub) -> Option<Box<dyn Any>> {
+    fn wait(&mut self, hub: &Hub) -> Option<Box<dyn Any>> {
         min_core::reset_cancel();
         INTERRUPTED.store(false, Ordering::SeqCst);
         install_sigint_restore();
@@ -91,8 +91,12 @@ impl Plugin for Repl {
         match line.as_str() {
             "/help" => {
                 self.put_line(&ansi::dim(
-                    "/help · /clear · /quit — ctrl-d quits, ↑/↓ history, ←/→ edit",
+                    "/help · /usage · /clear · /quit — ctrl-d quits, ↑/↓ history, ←/→ edit",
                 ));
+                None
+            }
+            "/usage" => {
+                self.put_line(&usage_line(hub));
                 None
             }
             "/clear" => Some(Box::new(events::ResetConversation {})),
@@ -543,6 +547,44 @@ fn thinking_preview(text: &str) -> String {
     out
 }
 
+/// The `/usage` report: the session's token total, as the ledger sees it.
+///
+/// The ledger is optional — without the usage plugin loaded there is
+/// nothing to report, and the line says so rather than showing zeros.
+fn usage_line(hub: &Hub) -> String {
+    let Some(ledger) = hub.service::<min_core::usage::UsageLedger>() else {
+        return "usage: the usage plugin is not loaded".to_string();
+    };
+    let s = ledger.snapshot();
+    if s.requests == 0 {
+        return "usage: no requests yet".to_string();
+    }
+    if !s.reported {
+        return format!(
+            "usage: {} request(s) — this endpoint does not report token usage",
+            s.requests
+        );
+    }
+    let t = s.total;
+    let mut line = format!(
+        "usage: {} request(s) · in {} · out {}",
+        s.requests,
+        t.input_tokens,
+        t.output_tokens
+    );
+    if t.cache_read_tokens > 0 || t.cache_write_tokens > 0 {
+        line.push_str(&format!(
+            " · cache read {} · cache write {}",
+            t.cache_read_tokens, t.cache_write_tokens
+        ));
+    }
+    line.push_str(&format!(" · total {}", t.total()));
+    // The context as the provider last saw it — the number a context
+    // window is measured against.
+    line.push_str(&format!(" · context now {}", s.last_prompt_tokens));
+    line
+}
+
 /// One frame of the transient working indicator (`  ⠋ thinking…`,
 /// `  ⠋ thinking: <first 50 chars>…`, or `  ⠙ calling edit…`).
 fn format_waiting(spin_idx: usize, thinking: &str, tool: &str) -> String {
@@ -565,6 +607,50 @@ mod tests {
     use super::*;
 
     // No stdin/stdout here: these exercise the pure editing helpers.
+
+    /// The `/usage` report — the ledger's numbers, or a clear reason why
+    /// there are none.
+    #[test]
+    fn usage_line_reports_the_ledger() {
+        use min_core::usage::{TokenUsage, UsageLedger};
+
+        // No usage plugin loaded: nothing to report, and no zeros either.
+        let hub = Hub::new(vec![]);
+        assert!(usage_line(&hub).contains("not loaded"));
+
+        let ledger = UsageLedger::default();
+        hub.set_service(ledger.clone());
+        assert!(usage_line(&hub).contains("no requests yet"));
+
+        ledger.record(TokenUsage {
+            input_tokens: 1000,
+            output_tokens: 250,
+            cache_read_tokens: 4000,
+            cache_write_tokens: 0,
+        });
+        let line = usage_line(&hub);
+        assert!(line.contains("1 request(s)"), "{line}");
+        assert!(line.contains("in 1000"), "{line}");
+        assert!(line.contains("out 250"), "{line}");
+        assert!(line.contains("cache read 4000"), "{line}");
+        assert!(line.contains("total 5250"), "{line}");
+        // The context as the provider last saw it: 1000 + 4000 cached.
+        assert!(line.contains("context now 5000"), "{line}");
+    }
+
+    /// An endpoint that reports no usage must say so — not show zeros.
+    #[test]
+    fn usage_line_says_when_the_endpoint_reports_nothing() {
+        use min_core::usage::{TokenUsage, UsageLedger};
+
+        let hub = Hub::new(vec![]);
+        let ledger = UsageLedger::default();
+        hub.set_service(ledger.clone());
+        ledger.record(TokenUsage::default());
+
+        let line = usage_line(&hub);
+        assert!(line.contains("does not report"), "{line}");
+    }
 
     #[test]
     fn waiting_indicator_formats_and_cycles_frames() {

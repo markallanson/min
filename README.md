@@ -77,7 +77,7 @@ min --session 1729180000     # pin the first session's id
 min --parent-session 1729179990   # the first session is its child
 ```
 
-Commands: `/help`, `/clear` (new session id + reset conversation), `/quit`.
+Commands: `/help`, `/usage` (token ledger for this session), `/clear` (new session id + reset conversation), `/quit`.
 Ctrl-C exits at any moment (even mid-generation); Ctrl-D quits at an empty
 prompt. Piping works, for scripting: `echo 'explain this repo' | min`.
 
@@ -124,15 +124,15 @@ from this repository and ask it to add a plugin.
 
 - no context-window compaction
 - no way to interrupt a running turn except Ctrl-C (which exits min)
-- no token/cost accounting, no retries mid-stream, no diff preview
+- no cost accounting (token counts are tracked, but not priced), no retries mid-stream, no diff preview
 - multiline input is one line; no tab completion
 
 ## Layout
 
 See [docs/architecture.md](docs/architecture.md) for a guided tour of every
 crate. In brief: `crates/min-core` is the loop; `min-repl`, `min-llm`,
-`min-agent`, `min-context`, `min-session`, `min-subagents`, `min-herdr`
-and `min-tools-*` are the plugins (UI, LLM client, agent loop, project
-instructions, session identity + JSONL store/resume, subagents, Herdr
-reporting, filesystem/shell/clock tools); `src/main.rs` is the only glue —
-the plugin list.
+`min-agent`, `min-context`, `min-session`, `min-subagents`, `min-usage`,
+`min-herdr` and `min-tools-*` are the plugins (UI, LLM client, agent loop,
+project instructions, session identity + JSONL store/resume, subagents,
+token accounting, Herdr reporting, filesystem/shell/clock tools);
+`src/main.rs` is the only glue — the plugin list.

@@ -18,6 +18,7 @@ min-core = { path = "crates/min-core" }
 min-repl = { path = "crates/min-repl" }
 min-llm = { path = "crates/min-llm" }
 min-agent = { path = "crates/min-agent" }
+min-usage = { path = "crates/min-usage" }
 min-tools-fs = { path = "crates/min-tools-fs" }
 min-tools-shell = { path = "crates/min-tools-shell" }
 min-tools-clock = { path = "crates/min-tools-clock" }
@@ -29,6 +30,9 @@ min-subagents = { path = "crates/min-subagents" }
 [[bin]]
 name = "min"
 path = "src/main.rs"
+
+[dev-dependencies]
+min-usage = { path = "crates/min-usage" }
 
 [profile.release]
 lto = true

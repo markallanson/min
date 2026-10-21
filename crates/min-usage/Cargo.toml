@@ -1,0 +1,8 @@
+[package]
+name = "min-usage"
+version.workspace = true
+edition.workspace = true
+description = "token accounting plugin — records LLM usage into a ledger and publishes it as a service"
+
+[dependencies]
+min-core = { path = "../min-core" }
