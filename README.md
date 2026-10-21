@@ -78,8 +78,9 @@ min --parent-session 1729179990   # the first session is its child
 ```
 
 Commands: `/help`, `/usage` (token ledger for this session), `/clear` (new session id + reset conversation), `/quit`.
-Ctrl-C exits at any moment (even mid-generation); Ctrl-D quits at an empty
-prompt. Piping works, for scripting: `echo 'explain this repo' | min`.
+Ctrl-C at the prompt exits; Ctrl-C mid-turn cancels the turn and returns you to
+the prompt; Ctrl-D quits at an empty prompt. Piping works, for scripting:
+`echo 'explain this repo' | min`.
 
 ### 429s — two very different meanings
 
@@ -135,7 +136,8 @@ reports it too — it is nightly-only, hence the `+nightly`.
 ## Limitations (on purpose, for now)
 
 - no context-window compaction
-- no way to interrupt a running turn except Ctrl-C (which exits min)
+- Ctrl-C cancels a running turn, but only once the endpoint sends something
+  again — a stalled connection waits for the request timeout
 - no cost accounting (token counts are tracked, but not priced), no retries mid-stream, no diff preview
 - multiline input is one line; no tab completion
 

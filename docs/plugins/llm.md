@@ -265,6 +265,11 @@ attempt 1 → 429 code 1113 → is_plan_mismatch ✓
   unsupported types rejected.
 - `cancel_reader_aborts_on_cancellation_or_interrupted` and `complete_aborts_immediately_if_cancelled`:
   in-flight reads and completions abort immediately when `is_cancelled()` is set.
+
+Cancellation is observed at read boundaries: the flag is checked when a read
+returns, not by interrupting the read itself. `ureq` sets a socket read
+timeout, so a blocked read does come back — but only when the endpoint sends
+something or that timeout fires. See the repl doc's "Interrupts" section.
 - Token usage: each dialect's count is parsed and normalized; the OpenAI
   usage chunk is read even though it carries no choices; the OpenAI body
   asks for usage (`stream_options.include_usage`); the stream is read past

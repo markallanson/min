@@ -125,6 +125,14 @@ This is why ctrl-c at the prompt exits the app, while ctrl-c mid-turn cancels
 the in-flight LLM or tool requests and brings min back to the prompt waiting for
 the next command.
 
+**One limit worth knowing.** The mid-turn handler only *sets a flag*; the
+in-flight request notices it when its next read returns. Rust's std installs
+`SA_RESTART`, so a blocked read is silently restarted rather than failing with
+`EINTR` — the request is only interrupted once the endpoint sends something
+(or its read timeout fires). Against a responsive endpoint ctrl-c is
+immediate; against one that accepts the connection and then goes silent, the
+turn waits for that timeout. The 600s request timeout is the backstop.
+
 ## Worked example
 
 `echo 'hi' | min` (non-tty) and a tty session side by side:
