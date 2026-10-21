@@ -50,12 +50,6 @@ impl Repl {
     }
 }
 
-impl Default for Repl {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Plugin for Repl {
     fn name(&self) -> &'static str {
         "repl"

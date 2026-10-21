@@ -35,12 +35,6 @@ impl AgentPlugin {
     }
 }
 
-impl Default for AgentPlugin {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Plugin for AgentPlugin {
     fn name(&self) -> &'static str {
         "agent"
@@ -192,7 +186,7 @@ impl AgentPlugin {
         let name = call["name"].as_str().unwrap_or_default().to_string();
         let input = call["input"].to_string();
         hub.emit(events::ToolStart {
-            brief: brief(&name, &call["input"]),
+            brief: brief(&call["input"]),
             name: name.clone(),
         });
         let t0 = Instant::now();
@@ -243,7 +237,7 @@ fn usage_of(message: &Value) -> min_core::usage::TokenUsage {
 }
 
 /// One glanceable line describing a tool call, for the UI.
-fn brief(_name: &str, input: &Value) -> String {
+fn brief(input: &Value) -> String {
     if let Some(c) = input["command"].as_str() {
         c.lines().next().unwrap_or("").chars().take(80).collect()
     } else if let Some(p) = input["path"].as_str() {

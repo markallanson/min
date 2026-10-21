@@ -163,7 +163,7 @@ pub struct Llm {
     /// Set once the mirror has been tried (successfully or not).
     mirrored: Cell<bool>,
     auth: Auth,
-    pub model: String,
+    model: String,
     max_tokens: u64,
     /// Ollama's `options.num_ctx` — its server default silently truncates long prompts.
     num_ctx: u64,
@@ -367,7 +367,7 @@ impl Llm {
     }
 
     /// The currently active endpoint (may have switched to the mirror portal).
-    pub fn base(&self) -> String {
+    fn base(&self) -> String {
         self.base.borrow().clone()
     }
 
@@ -510,7 +510,8 @@ fn parse_anthropic_chunk(
             b.usage.cache_write_tokens = num(&u["cache_creation_input_tokens"]);
         }
         "content_block_start" => match v["content_block"]["type"].as_str().unwrap_or_default() {
-            "text" => b.push_text(),
+            // A text block needs no bookkeeping: the deltas carry the text.
+            "text" => {}
             "thinking" | "redacted_thinking" => on_thinking("", ""),
             "tool_use" => {
                 let id = v["content_block"]["id"].as_str().unwrap_or_default();
@@ -848,7 +849,6 @@ struct Blocks {
 }
 
 impl Blocks {
-    fn push_text(&mut self) {}
     fn push_tool(&mut self, id: &str, name: &str) {
         self.tools.push((id.into(), name.into(), String::new(), Value::Null));
     }

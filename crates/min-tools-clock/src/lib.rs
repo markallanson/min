@@ -37,7 +37,7 @@ impl Tool for ClockTool {
 }
 
 /// Format seconds-since-epoch as `YYYY-MM-DD HH:MM:SS` (UTC).
-pub fn format_utc(secs: u64) -> String {
+fn format_utc(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let (y, m, d) = civil_from_days(days);
     let rem = secs % 86_400;

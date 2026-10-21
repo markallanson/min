@@ -8,3 +8,5 @@ description = "min plugin: clock tool returning the current UTC time"
 [dependencies]
 min-core = { path = "../min-core" }
 
+[lints]
+workspace = true

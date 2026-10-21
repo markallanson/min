@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -16,7 +15,7 @@ pub struct Callbacks<'a> {
     pub on_status: &'a mut dyn FnMut(&str),
 }
 
-pub trait ChatProvider: Any {
+pub trait ChatProvider {
     fn can_handle(&self, model: &str) -> bool;
 
     /// The model this provider will actually ask for.
@@ -36,7 +35,7 @@ pub trait ChatProvider: Any {
     ) -> Result<String, String>;
 }
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub struct LlmRouter {
     providers: Rc<RefCell<Vec<Box<dyn ChatProvider>>>>,
 }

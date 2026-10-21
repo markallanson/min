@@ -36,3 +36,7 @@ path = "src/main.rs"
 lto = true
 strip = true
 
+[workspace.lints.clippy]
+# Every plugin has a `new()`; none of them needs a `Default`. The lint
+# would have us add one that nothing calls.
+new_without_default = "allow"

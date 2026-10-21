@@ -7,3 +7,5 @@ description = "the min core: a plugin bus. nothing else."
 
 [dependencies]
 
+[lints]
+workspace = true

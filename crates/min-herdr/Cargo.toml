@@ -11,3 +11,5 @@ min-core = { path = "../min-core" }
 [dev-dependencies]
 min-session = { path = "../min-session" }
 
+[lints]
+workspace = true

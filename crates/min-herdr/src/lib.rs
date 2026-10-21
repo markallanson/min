@@ -182,12 +182,6 @@ fn release_args(cfg: &Config) -> Vec<String> {
     ]
 }
 
-impl Default for HerdrPlugin {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Plugin for HerdrPlugin {
     fn name(&self) -> &'static str {
         "herdr"

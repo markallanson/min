@@ -86,12 +86,6 @@ impl SubagentsPlugin {
     }
 }
 
-impl Default for SubagentsPlugin {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Plugin for SubagentsPlugin {
     fn name(&self) -> &'static str {
         "subagents"

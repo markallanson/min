@@ -61,18 +61,6 @@ struct Session {
 }
 
 impl SessionPlugin {
-    /// Legacy constructor used by existing callers/tests:
-    /// `session_id` pins the first session (`--session`), `parent_id` sets
-    /// its parent (`--parent-session`). Both `Some` drops both.
-    pub fn new(session_id: Option<String>, parent_id: Option<String>) -> Self {
-        let mode = match (session_id, parent_id) {
-            (Some(_), Some(_)) => SessionMode::Fresh { parent: None },
-            (Some(id), None) => SessionMode::Pinned(id),
-            (None, parent) => SessionMode::Fresh { parent },
-        };
-        Self::with_mode(mode)
-    }
-
     /// Construct with an explicit [`SessionMode`].
     pub fn with_mode(mode: SessionMode) -> Self {
         SessionPlugin {
@@ -814,12 +802,14 @@ mod tests {
     }
 
     #[test]
-    fn both_switches_in_new_drops_both() {
-        let p = SessionPlugin::new(Some("42-even".into()), Some("7-hole".into()));
+    fn a_pinned_session_has_no_parent() {
+        // `--session` and `--parent-session` are mutually exclusive; the
+        // CLI rejects both, so the mode can only carry one.
+        let p = SessionPlugin::with_mode(SessionMode::Pinned("42-even".into()));
         assert_eq!(
             p.startup_mode,
-            Some(SessionMode::Fresh { parent: None }),
-            "session id and parent together → both cleared"
+            Some(SessionMode::Pinned("42-even".into())),
+            "a pinned session keeps its id and has no parent"
         );
     }
 

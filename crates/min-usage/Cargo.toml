@@ -8,3 +8,5 @@ description = "token accounting plugin — records LLM usage into a ledger and p
 [dependencies]
 min-core = { path = "../min-core" }
 
+[lints]
+workspace = true

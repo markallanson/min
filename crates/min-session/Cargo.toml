@@ -9,3 +9,5 @@ description = "session identity, JSONL persistence, listing, and resume"
 min-core = { path = "../min-core" }
 serde_json = "1"
 
+[lints]
+workspace = true

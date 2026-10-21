@@ -8,3 +8,5 @@ description = "min plugin: project context — reads AGENTS.md (searched recursi
 [dependencies]
 min-core = { path = "../min-core" }
 
+[lints]
+workspace = true

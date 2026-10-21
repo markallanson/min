@@ -9,3 +9,5 @@ description = "min plugin: read / edit / write file tools"
 min-core = { path = "../min-core" }
 serde_json = "1"
 
+[lints]
+workspace = true

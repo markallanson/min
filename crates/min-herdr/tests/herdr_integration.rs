@@ -91,7 +91,7 @@ const RELEASE_LINE: &str = "pane release-agent pane-test --source custom:min --a
 
 fn harness() -> Vec<Box<dyn Plugin>> {
     vec![
-        Box::new(min_session::SessionPlugin::new(Some(SESSION_ID.into()), None)), // announces SessionStart from first wait
+        Box::new(min_session::SessionPlugin::with_mode(min_session::SessionMode::Pinned(SESSION_ID.into()))), // announces SessionStart from first wait
         Box::new(min_herdr::HerdrPlugin::new()), // production load order
         Box::new(Driver { fired: false }),
     ]

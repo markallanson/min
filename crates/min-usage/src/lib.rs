@@ -36,12 +36,6 @@ impl UsagePlugin {
     }
 }
 
-impl Default for UsagePlugin {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Plugin for UsagePlugin {
     fn name(&self) -> &'static str {
         "usage"
