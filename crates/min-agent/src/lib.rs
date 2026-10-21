@@ -131,9 +131,11 @@ impl AgentPlugin {
                 &system,
                 &messages_json,
                 &tools_json,
-                &mut on_delta,
-                &mut on_thinking,
-                &mut on_status,
+                min_core::llm::Callbacks {
+                    on_delta: &mut on_delta,
+                    on_thinking: &mut on_thinking,
+                    on_status: &mut on_status,
+                },
             ) {
                 Ok(m) => m,
                 Err(e) => {
@@ -394,9 +396,7 @@ mod tests {
             _system: &str,
             _messages_json: &str,
             _tools_json: &str,
-            _on_delta: &mut dyn FnMut(&str),
-            _on_thinking: &mut dyn FnMut(&str, &str),
-            _on_status: &mut dyn FnMut(&str),
+            _callbacks: min_core::llm::Callbacks<'_>,
         ) -> Result<String, String> {
             Ok(json!({
                 "stop_reason": "end_turn",

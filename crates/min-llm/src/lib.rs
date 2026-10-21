@@ -22,26 +22,26 @@
 //! portal for the rest of the session.
 //!
 //! Environment:
-//! - `MIN_API`            dialect or endpoint alias: `"anthropic"` (default),
-//!                        `"openai"`, `"zai"` (Z.ai coding plan), `"openrouter"`,
-//!                        `"vertex"` (Gemini on Vertex AI, Google ADC auth),
-//!                        `"ollama"` (native `/api/chat`, no key needed)
-//! - `MIN_BASE_URL`       overrides the endpoint an alias picks (default
-//!                        `https://api.anthropic.com`)
-//! - `MIN_MODEL`          overrides the model an alias picks
-//!                        (default `claude-sonnet-4-5`)
-//! - `MIN_MAX_TOKENS`     default `16384`
-//! - `ANTHROPIC_API_KEY`  key for the anthropic dialect
-//! - `MIN_API_KEY` / `OPENAI_API_KEY` / `ZAI_API_KEY`  keys for openai-style endpoints
-//! - `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION`  Vertex project and
-//!                        region (default `global`); credentials come from
-//!                        Application Default Credentials (see [`google`])
-//! - `OLLAMA_HOST`        Ollama server (default `http://localhost:11434`)
-//! - `OLLAMA_API_KEY`     optional bearer token for a remote Ollama
-//! - `MIN_NUM_CTX`        Ollama context window (default `32768`)
-//! - `HTTPS_PROXY`        optional outbound proxy
+//! - `MIN_API` — dialect or endpoint alias: `"anthropic"` (default),
+//!   `"openai"`, `"zai"` (Z.ai coding plan), `"openrouter"`,
+//!   `"vertex"` (Gemini on Vertex AI, Google ADC auth),
+//!   `"ollama"` (native `/api/chat`, no key needed)
+//! - `MIN_BASE_URL` — overrides the endpoint an alias picks (default
+//!   `https://api.anthropic.com`)
+//! - `MIN_MODEL` — overrides the model an alias picks
+//!   (default `claude-sonnet-4-5`)
+//! - `MIN_MAX_TOKENS` — default `16384`
+//! - `ANTHROPIC_API_KEY` — key for the anthropic dialect
+//! - `MIN_API_KEY` / `OPENAI_API_KEY` / `ZAI_API_KEY` — keys for openai-style endpoints
+//! - `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` — Vertex project and
+//!   region (default `global`); credentials come from
+//!   Application Default Credentials (see [`google`])
+//! - `OLLAMA_HOST` — Ollama server (default `http://localhost:11434`)
+//! - `OLLAMA_API_KEY` — optional bearer token for a remote Ollama
+//! - `MIN_NUM_CTX` — Ollama context window (default `32768`)
+//! - `HTTPS_PROXY` — optional outbound proxy
 
-use min_core::{events, Hub, Plugin};
+use min_core::{Hub, Plugin};
 use min_core::usage::TokenUsage;
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
@@ -50,7 +50,7 @@ use std::time::Duration;
 
 mod google;
 
-use min_core::llm::{ChatProvider, LlmRouter};
+use min_core::llm::{Callbacks, ChatProvider, LlmRouter};
 
 pub struct RouterPlugin;
 
@@ -137,14 +137,12 @@ impl ChatProvider for Llm {
         system: &str,
         messages_json: &str,
         tools_json: &str,
-        on_delta: &mut dyn FnMut(&str),
-        on_thinking: &mut dyn FnMut(&str, &str),
-        on_status: &mut dyn FnMut(&str),
+        callbacks: Callbacks<'_>,
     ) -> Result<String, String> {
         let messages: Vec<Value> = serde_json::from_str(messages_json).unwrap_or_default();
         let tools: Vec<Value> = serde_json::from_str(tools_json).unwrap_or_default();
-        
-        let result = self.complete_inner(system, &messages, &tools, on_delta, on_thinking, on_status)?;
+
+        let result = self.complete_inner(system, &messages, &tools, callbacks)?;
         Ok(serde_json::to_string(&result).unwrap_or_default())
     }
 }
@@ -226,19 +224,15 @@ impl Llm {
     }
 
     /// Stream one completion. `messages` are Anthropic-style; `tools` are
-    /// `[{"name","description","input_schema"}]`; `on_delta` receives text as
-    /// it arrives; `on_thinking` receives `(reasoning_text, tool_name)` when
-    /// the model streams non-text work (reasoning tokens or tool-call JSON);
-    /// `on_status` receives human-readable retry progress.
-    /// Returns the normalized message (see crate docs).
+    /// `[{"name","description","input_schema"}]`. The `callbacks` report the
+    /// stream as it happens — see [`Callbacks`]. Returns the normalized
+    /// message (see crate docs).
     pub fn complete_inner(
         &self,
         system: &str,
         messages: &[Value],
         tools: &[Value],
-        on_delta: &mut dyn FnMut(&str),
-        on_thinking: &mut dyn FnMut(&str, &str),
-        on_status: &mut dyn FnMut(&str),
+        callbacks: Callbacks<'_>,
     ) -> Result<Value, String> {
         if min_core::is_cancelled() {
             return Err("cancelled".into());
@@ -254,6 +248,8 @@ impl Llm {
                 return Err("cancelled".into());
             }
             let mut streamed = false;
+            let on_delta = &mut *callbacks.on_delta;
+            let on_thinking = &mut *callbacks.on_thinking;
             let mut delta = |t: &str| {
                 streamed = true;
                 on_delta(t);
@@ -274,7 +270,7 @@ impl Llm {
                             let from = self.base();
                             self.mirrored.set(true);
                             *self.base.borrow_mut() = alt.to_string();
-                            on_status(&format!(
+                            (callbacks.on_status)(&format!(
                                 "key has no resource package on {from} — switching to {alt} for this session"
                             ));
                             continue;
@@ -303,7 +299,7 @@ impl Llm {
                 Fail::Http { retry_after: Some(ra), .. } => *ra,
                 _ => SCHEDULE[attempt - 1],
             };
-            on_status(&format!(
+            (callbacks.on_status)(&format!(
                 "{} — retrying in {wait}s (attempt {attempt}/{attempts})",
                 fail.brief()
             ));
@@ -476,18 +472,18 @@ impl<R> CancelReader<R> {
 impl<R: Read> Read for CancelReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if min_core::is_cancelled() {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "cancelled"));
+            return Err(std::io::Error::other("cancelled"));
         }
         match self.inner.read(buf) {
             Ok(n) => {
                 if min_core::is_cancelled() {
-                    Err(std::io::Error::new(std::io::ErrorKind::Other, "cancelled"))
+                    Err(std::io::Error::other("cancelled"))
                 } else {
                     Ok(n)
                 }
             }
             Err(e) if min_core::is_cancelled() || e.kind() == std::io::ErrorKind::Interrupted => {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "cancelled"))
+                Err(std::io::Error::other("cancelled"))
             }
             Err(e) => Err(e),
         }
@@ -1508,9 +1504,11 @@ mod tests {
                 "sys",
                 &[json!({"role": "user", "content": "hi"})],
                 &[],
-                &mut |d| deltas.push(d.to_string()),
-                &mut |_, _| {},
-                &mut |_| {},
+                Callbacks {
+                    on_delta: &mut |d: &str| deltas.push(d.to_string()),
+                    on_thinking: &mut |_: &str, _: &str| {},
+                    on_status: &mut |_: &str| {},
+                },
             )
             .expect("the request succeeded");
 
@@ -1545,9 +1543,13 @@ mod tests {
             "sys",
             &[],
             &[],
-            &mut |d| deltas.push(d.to_string()),
-            &mut |t, tl| thoughts.push((t.to_string(), tl.to_string())),
-            &mut |s| status.push(s.to_string()),
+            Callbacks {
+                on_delta: &mut |d: &str| deltas.push(d.to_string()),
+                on_thinking: &mut |t: &str, tl: &str| {
+                    thoughts.push((t.to_string(), tl.to_string()))
+                },
+                on_status: &mut |s: &str| status.push(s.to_string()),
+            },
         );
         assert!(res.is_err());
         assert_eq!(res.unwrap_err(), "cancelled");

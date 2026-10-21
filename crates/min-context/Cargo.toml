@@ -2,10 +2,9 @@
 name = "min-context"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "min plugin: project context — reads AGENTS.md (searched recursively, root-first) into the agent's system prompt"
 
 [dependencies]
 min-core = { path = "../min-core" }
 
-[lints]
-workspace = true

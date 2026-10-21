@@ -129,8 +129,8 @@ cargo install cargo-machete --locked  # the hook uses it
 
 The pre-commit hook runs `cargo machete --fix`, so a dependency nothing
 imports is stripped and staged with the commit. The same check is a cargo
-lint (`[workspace.lints.cargo] unused_crate_dependencies`), so
-`cargo +nightly check --workspace --all-targets` reports it too.
+lint (`.cargo/config.toml`), so `cargo +nightly check --workspace --all-targets`
+reports it too — it is nightly-only, hence the `+nightly`.
 
 ## Limitations (on purpose, for now)
 

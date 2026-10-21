@@ -2,6 +2,7 @@
 name = "min-subagents"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "min plugin: the subagent tool — one `min` process, parented on this session, per instruction"
 
 [dependencies]
@@ -11,5 +12,3 @@ serde_json = "1"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-[lints]
-workspace = true

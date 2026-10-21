@@ -1,0 +1,2 @@
+[lints.cargo]
+unused_crate_dependencies = "warn"

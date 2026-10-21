@@ -131,13 +131,11 @@ impl Plugin for Repl {
             self.clear_waiting();
             self.write(&e.text);
             self.at_line_start = e.text.ends_with('\n');
-        } else if event.downcast_ref::<events::TurnCancelled>().is_some() {
-            self.clear_waiting();
-            if !self.at_line_start {
-                self.write("\n");
-            }
-            self.at_line_start = true;
-        } else if event.downcast_ref::<events::MessageEnd>().is_some() {
+        } else if event.downcast_ref::<events::TurnCancelled>().is_some()
+            || event.downcast_ref::<events::MessageEnd>().is_some()
+        {
+            // Both end the turn's output: stop the indicator and make sure
+            // the next thing printed starts on a fresh line.
             self.clear_waiting();
             if !self.at_line_start {
                 self.write("\n");

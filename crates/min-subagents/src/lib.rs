@@ -123,7 +123,7 @@ impl Plugin for SubagentsPlugin {
         if event.downcast_ref::<events::Quit>().is_some()
             || event.downcast_ref::<events::TurnCancelled>().is_some()
         {
-            for (_, job) in self.jobs.borrow_mut().iter_mut() {
+            for job in self.jobs.borrow_mut().values_mut() {
                 let _ = job.kill("cancelled — subagent killed");
             }
         }

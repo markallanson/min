@@ -2,11 +2,10 @@
 name = "min-session"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "session identity, JSONL persistence, listing, and resume"
 
 [dependencies]
 min-core = { path = "../min-core" }
 serde_json = "1"
 
-[lints]
-workspace = true

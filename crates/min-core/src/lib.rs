@@ -165,6 +165,20 @@ pub fn run(plugins: Vec<Box<dyn Plugin>>) {
     }
 }
 
+static CANCELLED: AtomicBool = AtomicBool::new(false);
+
+pub fn cancel() {
+    CANCELLED.store(true, Ordering::SeqCst);
+}
+
+pub fn is_cancelled() -> bool {
+    CANCELLED.load(Ordering::SeqCst)
+}
+
+pub fn reset_cancel() {
+    CANCELLED.store(false, Ordering::SeqCst);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,18 +301,4 @@ mod tests {
         assert!(hub.tools().run("nope", "").is_err());
         assert_eq!(hub.tools().specs()[0].0, "hi");
     }
-}
-
-static CANCELLED: AtomicBool = AtomicBool::new(false);
-
-pub fn cancel() {
-    CANCELLED.store(true, Ordering::SeqCst);
-}
-
-pub fn is_cancelled() -> bool {
-    CANCELLED.load(Ordering::SeqCst)
-}
-
-pub fn reset_cancel() {
-    CANCELLED.store(false, Ordering::SeqCst);
 }

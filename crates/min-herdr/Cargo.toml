@@ -2,6 +2,7 @@
 name = "min-herdr"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "min plugin: report agent state to Herdr (idle / working / blocked) via its CLI when running inside a Herdr pane"
 
 [dependencies]
@@ -10,5 +11,3 @@ min-core = { path = "../min-core" }
 [dev-dependencies]
 min-session = { path = "../min-session" }
 
-[lints]
-workspace = true

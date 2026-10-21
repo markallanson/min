@@ -2,9 +2,8 @@
 name = "min-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "the min core: a plugin bus. nothing else."
 
 [dependencies]
 
-[lints]
-workspace = true
