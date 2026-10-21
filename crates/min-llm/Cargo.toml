@@ -11,3 +11,6 @@ serde_json = "1"
 # Google ADC: already in the tree via rustls; used to sign service-account JWTs.
 ring = "0.17"
 base64 = "0.22"
+
+[lints]
+workspace = true

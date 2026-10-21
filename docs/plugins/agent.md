@@ -18,7 +18,7 @@ context-window management. This is the simplest loop that can edit code.
  │  messages.push(user)                                               │
  │                                                                    │
  │  ┌────────────────────── up to MAX_ROUNDS ────────────────────┐    │
- │  │  llm = hub.service::<min_llm::Llm>()   ── none? → Error ──▶│────┼──▶ out
+ │  │  router = hub.service::<LlmRouter>()   ── none? → Error ──▶│────┼──▶ out
  │  │  tools = hub.tools().specs()                               │    │
  │  │  emit LlmStart {round, model, messages, tools}             │    │
  │  │  msg = llm.complete(...) ┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅┅ │    │
@@ -45,8 +45,8 @@ the only line of work that leaves the plugin (via the service).
 | shape | listener + the harness's worker (all work happens inside `handle`) |
 | tools offered | none |
 | services published | none |
-| services consumed | `min_llm::Llm` — the one documented import exception |
-| deps | `min-core`, `min-llm` (type only), `serde_json` |
+| services consumed | `min_core::llm::LlmRouter` — a core-owned type, so no plugin import |
+| deps | `min-core`, `serde_json` |
 
 ## State
 
@@ -80,7 +80,6 @@ the only line of work that leaves the plugin (via the service).
 | `Thinking` | every non-text stream chunk from `on_thinking` — `text` (reasoning tokens) and `tool` (name of the tool call being streamed) |
 | `AssistantDelta` | every streamed text chunk, forwarded from the LLM's `on_delta` callback |
 | `MessageEnd` | after each complete assistant message |
-| `TurnCancelled` | when the turn is cancelled by the user (Ctrl-C) mid-stream or during a tool call |
 | `ToolStart` | before each tool runs — `name` + a one-line `brief` (`command`'s first line or `path`, capped at 80 chars) |
 | `ToolEnd` | after each tool — `ok`, `secs`, `note` (first non-blank line, 100 chars), `preview` (first 5 non-blank lines, 120 cols each, UTF-8-safe) |
 | `Info` | retry/status chatter forwarded from the LLM's `on_status` |
@@ -104,12 +103,14 @@ endpoints:
 An `Err` from the tool becomes `is_error: true` with the error as content;
 the model sees it and usually corrects course.
 
-## The one import exception
+## No import exception
 
-`min-agent` is the only plugin that imports another plugin's crate —
-`use min_llm::Llm` — and only to *name* the service type in
-`hub.service::<Llm>()`. The lookup is core-mediated and optional: with no
-LLM plugin loaded the agent emits an `Error` and keeps running. Details in
+`min-agent` imports no other plugin. It looks the router up by its
+core-owned type — `hub.service::<min_core::llm::LlmRouter>()` — so the
+`ChatProvider` trait and the `LlmRouter` that dispatches to it live in
+`min-core`, while every implementation lives in `min-llm`. The lookup is
+optional: with no provider registered the agent emits an `Error` and keeps
+running. Details in
 [architecture.md](../architecture.md#dependency-rules).
 
 ## Worked example
@@ -123,7 +124,7 @@ key │ core                          repl      llm    clock      agent
     │   delivered in order ─────▶ (busy)   ignores ignores ──▶ handle:
     │                                                     ┌────── turn()
     │                                                     │ push user msg
-    │                                                     │ service::<Llm>() ✓
+    │                                                     │ service::<LlmRouter>() ✓
     │                                                     │ tools().specs()
     │◀─ AssistantDelta("Let me check…") ──────────────────│ llm.complete() ┅
     │ prints chunk                                        │
@@ -155,9 +156,9 @@ tool-call loop ends the turn with an `Error` instead of hanging forever.
   old ones so a re-emitted file replaces rather than duplicates.
 - `push_message` emits `ConversationMessage` and `ReplayMessage` restores
   `messages` without re-emitting.
-- `turn_cancelled_synthesizes_interrupted_message_and_emits_event`: turn cancellation
-  appends an interrupted assistant message to preserve alternating roles and emits
-  `TurnCancelled`.
+- `a_round_reports_its_token_usage` and `a_round_without_usage_reports_empty_usage`:
+  the provider's own report reaches the bus, normalized — and an endpoint that
+  reports nothing yields an empty usage, never a zero-cost one.
 
 ## See also
 

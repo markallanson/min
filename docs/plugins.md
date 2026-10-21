@@ -51,7 +51,7 @@ the tests pin.
 | session | [session.md](plugins/session.md) | source + listener | session identity (`<epoch>-<rand>`), JSONL persistence (XDG state dir), `--sessions` listing, and `--resume` |
 | herdr | [herdr.md](plugins/herdr.md) | listener | agent state → Herdr (no-op outside a Herdr pane; reports `--agent-session-id`) |
 | repl | [repl.md](plugins/repl.md) | source | terminal UI: raw-mode editor, streaming output, owns `Quit` |
-| llm | [llm.md](plugins/llm.md) | provider | streaming LLM service (anthropic + openai + ollama wire), retries, z.ai mirror |
+| llm | [llm.md](plugins/llm.md) | provider | the LLM router + one provider per dialect (anthropic · openai · vertex · zai · ollama), retries, z.ai mirror |
 | fs | [tools-fs.md](plugins/tools-fs.md) | capability | `read` / `edit` / `write` — exact-match, atomic edits |
 | shell | [tools-shell.md](plugins/tools-shell.md) | capability | `bash` with timeout, deadlock-free capture, output truncation |
 | clock | [tools-clock.md](plugins/tools-clock.md) | capability | current UTC time — the worked example, made real |
@@ -225,7 +225,7 @@ optional alternative to an import:
 
 ```rust
 // the provider, in start():            // the consumer, anywhere:
-hub.set_service(Llm::from_env());       let Some(llm) = hub.service::<Llm>() else {
+hub.set_service(LlmRouter::default());  let Some(router) = hub.service::<LlmRouter>() else {
                                             // degrade gracefully — it's optional
                                         };
 ```
@@ -233,9 +233,11 @@ hub.set_service(Llm::from_env());       let Some(llm) = hub.service::<Llm>() els
 One value per type; a second `set_service::<S>` replaces the first. The
 lookup returns `None` when absent, so a consumer works even when the
 provider plugin isn't loaded. The type still has to be *nameable* by the
-consumer — see "The one exception" in
-[architecture.md](architecture.md#dependency-rules) for how min handles
-that today.
+consumer — and it must not live in another plugin's crate, or the consumer
+would have to import that plugin. **Put the shared type in `min-core`** and
+let the plugin own only the behaviour: `min-core/src/llm.rs` holds the
+`ChatProvider` trait and the `LlmRouter`, and `min-llm` supplies the
+implementations. See [architecture.md](architecture.md#dependency-rules).
 
 ---
 

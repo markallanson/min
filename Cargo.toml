@@ -31,9 +31,15 @@ min-subagents = { path = "crates/min-subagents" }
 name = "min"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 min-usage = { path = "crates/min-usage" }
 
 [profile.release]
 lto = true
 strip = true
+
+[workspace.lints.cargo]
+unused_crate_dependencies = "warn"

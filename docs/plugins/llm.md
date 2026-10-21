@@ -1,8 +1,9 @@
 # min-llm — the LLM client plugin
 
-Publishes the `Llm` service — a streaming chat client for exactly one
-configured endpoint — and normalizes every dialect to Anthropic-style
-content blocks, so the rest of min never cares which wire format is in use:
+Publishes the `LlmRouter` service and registers one provider per dialect
+into it — a streaming chat client for exactly one configured endpoint. Every
+dialect is normalized to Anthropic-style content blocks, so the rest of min
+never cares which wire format is in use:
 
 ```json
 { "stop_reason": "end_turn" | "tool_use" | "max_tokens",
@@ -14,10 +15,10 @@ content blocks, so the rest of min never cares which wire format is in use:
 
 | | |
 |---|---|
-| crate / plugin name | `crates/min-llm` / `"llm"` |
+| crate / plugin name | `crates/min-llm` — six plugins: `"llm-router"`, `"llm-anthropic"`, `"llm-openai"`, `"llm-vertex"`, `"llm-zai"`, `"llm-ollama"` |
 | shape | **provider** — publishes a service; listens to nothing |
 | tools offered | none |
-| services published | `Llm` (one per process; consumed by min-agent via `hub.service::<Llm>()`) |
+| services published | `LlmRouter` (one per process; consumed by min-agent via `hub.service::<LlmRouter>()`) |
 | deps | `min-core`, `ureq`, `serde_json`, `ring` + `base64` (Google service-account JWTs; already in the tree via rustls) — the largest crate, absorbing all wire-format ugliness |
 
 ## Configuration (environment)
@@ -105,11 +106,18 @@ an agent's system prompt and history without reporting it.
 
 ## What `start` does
 
-1. Build `Llm::from_env()` from the configuration above.
-2. Warn via `Info` when no API key is set (or, for `vertex`, when ADC or the
-   project can't be resolved).
-3. Greet via `Info` (`<model> @ <host> — /help for commands`).
-4. `hub.set_service(llm)`.
+`RouterPlugin` publishes the router; each provider plugin registers itself
+with it, but only if `MIN_API` selects its dialect:
+
+1. `RouterPlugin` — `hub.set_service(LlmRouter::default())`.
+2. `AnthropicPlugin` — registers when `MIN_API` is `anthropic` or unset.
+3. `OpenAiPlugin` / `VertexPlugin` / `ZaiPlugin` / `OllamaPlugin` — register
+   when `MIN_API` is `openai` / `vertex` / `zai` / `ollama` respectively.
+
+A registered provider is an `Llm::from_env()` built from the configuration
+above. No provider is registered when `MIN_API` names a dialect that has no
+plugin, and the router then fails the agent's call with
+`no LLM provider configured for model …`.
 
 ## Events
 
@@ -119,8 +127,8 @@ an agent's system prompt and history without reporting it.
 
 | event | when |
 |---|---|
-| `Info` | missing-key warning at `start`; the greeting; retry progress from `complete`'s `on_status` |
-| `Error` | never from `start`; `complete` returns failures to the caller (min-agent turns them into `Error`s) |
+| `Info` | never — the provider reports progress through the `on_status` callback, which the agent forwards onto the bus |
+| `Error` | never — `complete` returns failures to the caller (min-agent turns them into `Error`s) |
 
 The plugin emits no usage events of its own — it *reports* usage by
 including it in the normalized response, and min-agent puts it on the bus
@@ -264,7 +272,6 @@ attempt 1 → 429 code 1113 → is_plan_mismatch ✓
 
 ## See also
 
-[min-agent](agent.md) (the only consumer of the `Llm` service — the one
-documented import exception) · [min-usage](usage.md) (where the token
-counts go) · [README](../../README.md) (429 field guide) ·
-[plugins.md](../plugins.md)
+[min-agent](agent.md) (the consumer of the `LlmRouter` service) ·
+[min-usage](usage.md) (where the token counts go) ·
+[README](../../README.md) (429 field guide) · [plugins.md](../plugins.md)

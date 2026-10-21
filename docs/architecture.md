@@ -28,7 +28,8 @@ plugin — the hooks, the three shapes, a complete worked example — see
     │                     (XDG state dir), `--sessions` listing, `--resume`
     │   min-herdr         agent state → Herdr (no-op outside a Herdr pane)
     │   min-repl          terminal UI: raw-mode editor, streaming output
-    │   min-llm           streaming LLM client (anthropic + openai wire)
+    │   min-llm           the LLM router + one provider per dialect
+    │                     (anthropic · openai · vertex · zai · ollama)
     │   min-tools-fs      read / edit / write
     │   min-tools-shell   bash with timeout + output capture
     │   min-tools-clock   current UTC time
@@ -168,7 +169,7 @@ The catalogue — pure data, no behaviour:
 | `ResetConversation` | repl → everyone | (none) — context re-reads AGENTS.md, session re-rolls the id on it |
 | `ClearPromptSections` | context → agent | (none) — agent drops its collected sections |
 | `SystemPromptSection` | context → agent | title + markdown body to append to the system prompt |
-| `TurnCancelled` | agent → everyone | (none) — in-flight turn was cancelled by user (Ctrl-C) |
+| `TurnCancelled` | *(no emitter yet)* | (none) — declared and handled by the repl, herdr, session and subagents, but no plugin emits it yet |
 | `Usage` | agent → everyone | `usage`, `model`, `round` — the normalized token usage of one LLM request |
 | `Quit` | repl → everyone | (none) — repl calls `hub.quit()` on it |
 
@@ -237,7 +238,7 @@ Load order: `repl, llm, fs, shell, clock, agent`.
      │   delivered in order ─────▶ ignores     ignores ignores ──▶ handle:
      │                                                    ┌────────────── turn()
      │                                                    │  push user msg
-     │                                                    │  service::<Llm>() ✓
+     │                                                    │  service::<LlmRouter>() ✓
      │                                                    │  tools().specs()
      │◀──── LlmStart {round: 1, …} ───────────────────────│
      │ shows "⠋ thinking…"                                │
@@ -261,7 +262,7 @@ Load order: `repl, llm, fs, shell, clock, agent`.
 Every arrow is an event from the table above; every box on the right is the
 agent plugin executing *inside* its own `handle(UserInput)` — which is why
 it never sees its own emissions, only the repl does. The safety valve around
-all this: the agent caps a turn at 50 LLM↔tool rounds.
+all this: the agent caps a turn at 1000 LLM↔tool rounds (`MAX_ROUNDS`).
 
 ---
 
@@ -269,7 +270,7 @@ all this: the agent caps a turn at 50 LLM↔tool rounds.
 
 ```
  main ──▶ session  repl    llm    tools-fs   tools-shell   tools-clock   agent
-            │       │       │        │           │              │          │└┄┄▶ min-llm (type only, see below)
+            │       │       │        │           │              │          │
             └───────┴───────┴────────┴───────────┴──────────────┴──────────┘
                                     │
                                     ▼
@@ -279,11 +280,14 @@ all this: the agent caps a turn at 50 LLM↔tool rounds.
 - Plugins never import each other. Coordination is events, services, or the
   tool registry — all core-owned vocabulary. This is what makes any plugin
   deletable.
-- **The one exception, on record:** `min-agent` imports `min-llm` to name
-  the `Llm` service type (`service::<Llm>()`). It is a key, not a link —
-  the lookup is core-mediated and optional (no service → an `Error` event,
-  agent still runs). Removing it means publishing `Box<dyn ChatLlm>` with
-  the trait in `min-core`; kept concrete so far for simplicity.
+- **No exceptions.** A service's *type* must be nameable by its consumers,
+  so a shared type lives in `min-core` — the behaviour stays in the plugin
+  that owns it. `min-core/src/llm.rs` holds the `ChatProvider` trait and the
+  `LlmRouter` that dispatches to it; `min-llm` supplies the implementations
+  and registers them. The agent looks up `service::<LlmRouter>()` — a type
+  in the core, so no plugin-to-plugin import is needed. The lookup is
+  optional: with no provider registered, the agent emits an `Error` and
+  keeps running.
 - `min-core` imports nothing.
 
 ---
@@ -301,8 +305,8 @@ all this: the agent caps a turn at 50 LLM↔tool rounds.
    else. Drop any plugin from the build and the rest still runs.
 4. **Synchronous, single-threaded, in-order.** Blocking lives in `wait`.
    No tokio, no channels, no locks, no queues.
-5. **Complexity lives at the edge.** The biggest crate (`min-llm`, ~640
-   lines) absorbs wire-format ugliness so the agent loop stays ~200.
+5. **Complexity lives at the edge.** The biggest crate (`min-llm`, ~1800
+   lines) absorbs wire-format ugliness so the agent loop stays ~520.
 
 ## Where things live
 
@@ -313,7 +317,8 @@ required, one per crate, per [plugins.md](plugins.md#plugin-documentation-requir
 crates/min-core          the loop: Plugin, Hub, events, Tool, ToolRegistry,
                          and the token-accounting vocabulary (TokenUsage, UsageLedger)
 crates/min-repl          terminal UI (raw mode, ANSI, input history)      → plugins/repl.md
-crates/min-llm           Anthropic Messages + OpenAI chat clients (streaming) → plugins/llm.md
+crates/min-llm           the LLM router + streaming providers (anthropic, openai,
+                         vertex, zai, ollama)                            → plugins/llm.md
 crates/min-agent         conversation state + tool loop + system prompt       → plugins/agent.md
 crates/min-context       AGENTS.md (~/.config/min first, then whole tree, root-first) → system prompt
                                                                              → plugins/context.md

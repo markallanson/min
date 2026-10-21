@@ -24,4 +24,12 @@ Rules when changing this codebase:
   index in `docs/plugins.md`, in the same change as the code. See
   **docs/plugins.md → “Plugin documentation (required)”**.
 - Verify with `cargo build` and `cargo test --workspace` after Rust changes.
+- Keep the manifests honest: a crate may depend only on `min-core` plus what
+  its own code uses. The `unused_crate_dependencies` lint is enabled
+  workspace-wide (`[workspace.lints.cargo]` in the root `Cargo.toml`), so
+  `cargo +nightly check --workspace --all-targets` reports a dependency
+  nothing imports. On stable the lint is a no-op, so run the nightly form
+  before adding or removing a dependency. `cargo machete --fix` removes
+  unused ones automatically; a dependency used only by a test belongs in
+  `[dev-dependencies]`.
 - Conventional commits (`feat:`, `fix:`, `docs:` …).
