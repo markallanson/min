@@ -27,6 +27,7 @@ min-context = { path = "crates/min-context" }
 min-herdr = { path = "crates/min-herdr" }
 min-session = { path = "crates/min-session" }
 min-subagents = { path = "crates/min-subagents" }
+min-village = { path = "crates/min-village" }
 
 [[bin]]
 name = "min"

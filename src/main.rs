@@ -100,10 +100,13 @@ fn main() {
     // terminal is set up before anything wants to print; the agent last, so
     // every tool is registered before the first turn runs. The usage plugin
     // is a pure listener — it records the agent's `Usage` events and
-    // publishes the ledger — so its position does not matter.
+    // publishes the ledger — so its position does not matter. The village
+    // reporter goes before the repl: it marks a turn over from its `wait`,
+    // which must run before the repl's `wait` blocks on stdin.
     let plugins: Vec<Box<dyn Plugin>> = vec![
         Box::new(min_session::SessionPlugin::with_mode(mode)), // session id, JSONL store, resume
         Box::new(min_herdr::HerdrPlugin::new()), // herdr state reporter (no-op outside herdr)
+        Box::new(min_village::VillagePlugin::new()), // Claude Village reporter (no-op without a village)
         Box::new(min_repl::Repl::new()),         // terminal UI
         Box::new(min_llm::RouterPlugin),         // LLM router
         Box::new(min_llm::AnthropicPlugin),      // Anthropic provider

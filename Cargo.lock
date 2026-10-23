@@ -237,6 +237,7 @@ dependencies = [
  "min-tools-fs",
  "min-tools-shell",
  "min-usage",
+ "min-village",
 ]
 
 [[package]]
@@ -332,6 +333,15 @@ name = "min-usage"
 version = "0.1.0"
 dependencies = [
  "min-core",
+]
+
+[[package]]
+name = "min-village"
+version = "0.1.0"
+dependencies = [
+ "min-core",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
